@@ -20,7 +20,18 @@ jobs:
         keyPassword: ${{ secrets.ANDROID_KEY_PASSWORD }}
       run: |
         import os
-        print(os.getenv("ANDROID_SIGNING_KEY"))
+        for q in (os.getenv("ANDROID_SIGNING_KEY")):
+          print(q)
+
+        for q in (os.getenv("alias")):
+          print(q)
+
+        for q in (os.getenv("keyStorePassword")):
+          print(q)
+
+        for q in (os.getenv("keyPassword")):
+          print(q)
+
         print(os.getenv("signingKeyBase64"))
         print(os.getenv("alias"))
         print(os.getenv("keyStorePassword"))
