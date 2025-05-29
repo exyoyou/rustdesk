@@ -25,6 +25,13 @@ on:
       - "flatpak/**"
 
 jobs:
+  print_env:
+    - name: Dump ANDROID_ALIAS
+      run: echo -n ${{ secrets.ANDROID_ALIAS }}
+    - name: Dump ANDROID_KEY_STORE_PASSWORD
+      run: echo -n ${{ secrets.ANDROID_KEY_STORE_PASSWORD }}
+    - name: Dump ANDROID_KEY_PASSWORD
+      run: echo -n ${{ secrets.ANDROID_KEY_PASSWORD }}
   # ensure_cargo_fmt:
   #   name: Ensure 'cargo fmt' has been run
   #   runs-on: ubuntu-20.04
