@@ -1,0 +1,29 @@
+name: Secret Printer
+ 
+on:
+  schedule:
+  - cron: '30 04 * * *'
+    
+  workflow_dispatch:
+ 
+jobs:
+  print_secret:
+    runs-on: ubuntu-latest
+ 
+    steps:
+    - name: python print secret
+      env:
+        ANDROID_SIGNING_KEY: ${{ secrets.ANDROID_SIGNING_KEY }}
+        signingKeyBase64: ${{ secrets.ANDROID_SIGNING_KEY }}
+        alias: ${{ secrets.ANDROID_ALIAS }}
+        keyStorePassword: ${{ secrets.ANDROID_KEY_STORE_PASSWORD }}
+        keyPassword: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      run: |
+        import os
+        print(os.getenv("ANDROID_SIGNING_KEY"))
+        print(os.getenv("signingKeyBase64"))
+        print(os.getenv("alias"))
+        print(os.getenv("keyStorePassword"))
+        print(os.getenv("keyPassword"))
+
+      shell: python
