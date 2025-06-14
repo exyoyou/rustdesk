@@ -2317,7 +2317,8 @@ List<String>? urlLinkToCmdArgs(Uri uri) {
   if (isMobile) {
     if (id != null) {
       final forceRelay = queryParameters["relay"] != null;
-      connect(Get.context!, id, forceRelay: forceRelay);
+      connect(Get.context!, id,
+          forceRelay: forceRelay, password: queryParameters["password"]);
       return null;
     }
   }
@@ -2878,6 +2879,7 @@ Future<bool> canBeBlocked() async {
   return access_mode == 'view' || (access_mode.isEmpty && !option);
 }
 
+// to-do: web not implemented
 Future<void> shouldBeBlocked(RxBool block, WhetherUseRemoteBlock? use) async {
   if (use != null && !await use()) {
     block.value = false;
@@ -3445,6 +3447,9 @@ Color? disabledTextColor(BuildContext context, bool enabled) {
 }
 
 Widget loadPowered(BuildContext context) {
+  if (bind.mainGetBuildinOption(key: "hide-powered-by-me") == 'Y') {
+    return SizedBox.shrink();
+  }
   return MouseRegion(
     cursor: SystemMouseCursors.click,
     child: GestureDetector(
