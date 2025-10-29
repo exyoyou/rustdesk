@@ -1,0 +1,42 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "attach",
+            "name": "Attach remote android",
+            "pid": "${input:androidRunId}",
+            "initCommands": [
+                "platform select remote-android",
+                "platform connect unix-abstract-connect:///data/data/com.carriez.flutter_hbb/debug.sock"
+            ],
+            // "preLaunchTask": "get-android-pid"
+        },
+        {
+            "name": "Flutter_Liunx",
+            "request": "launch",
+            "type": "dart",
+            "flutterMode": "debug", // 或 "profile", "release"
+            "program": "flutter/lib/main.dart",
+            "preLaunchTask": "build-rust-optional-linux",
+            "deviceId": "linux"
+        },
+        {
+            "name": "Flutter_Android_x64",
+            "request": "launch",
+            "type": "dart",
+            "flutterMode": "debug", // 或 "profile", "release"
+            "program": "flutter/lib/main.dart",
+            "preLaunchTask": "build-rust-optional-android-x86_64",
+            "deviceId": "android-x64"
+        },
+        {
+            "name": "Flutter_Android_arm64",
+            "request": "launch",
+            "type": "dart",
+            "flutterMode": "debug", // 或 "profile", "release"
+            "program": "flutter/lib/main.dart",
+            "preLaunchTask": "build-rust-optional-android-arm64"
+        },
+    ]
+}
