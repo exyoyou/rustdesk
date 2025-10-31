@@ -1,0 +1,23 @@
+{
+    "rust-analyzer.cargo.target": "aarch64-linux-android",
+    "rust-analyzer.cargo.features": [
+        "android",
+        "mediacodec"
+    ],
+    "rust-analyzer.cargo.extraEnv": {
+        "CARGO_CFG_TARGET_OS": "android",
+        "TARGET": "aarch64-linux-android",
+        "CARGO_BUILD_TARGET": "aarch64-linux-android"
+    },
+    "rust-analyzer.cargo.extraArgs": [
+        "--target",
+        "aarch64-linux-android"
+    ],
+    "rust-analyzer.procMacro.enable": true,
+    "rust-analyzer.cargo.buildScripts.enable": true,
+    "terminal.integrated.env.linux": {
+        "ANDROID_NDK_ROOT": "${env:HOME}/Android/Sdk/ndk/27.3.13750724",
+        "CARGO_CFG_TARGET_OS": "android",
+        "TARGET": "aarch64-linux-android"
+    }
+}
