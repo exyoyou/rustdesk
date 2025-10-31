@@ -2,9 +2,9 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "get-android-pid",
+            "label": "lldb-server-run",
             "type": "shell",
-            "command": "${workspaceFolder}/get_pid.sh",
+            "command": "${workspaceFolder}/.vscode/lldb_server_run.sh",
             "options": {
                 "shell": {
                     "executable": "zsh"
@@ -50,7 +50,42 @@
                 "android",
                 "arm64"
             ],
-        }
+        },
+        {
+            "label": "get-android-app-pid",
+            "type": "shell",
+            "command": "${workspaceFolder}/.vscode/get_android_pid.sh",
+            "options": {
+                "shell": {
+                    "executable": "zsh"
+                }
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "new",
+                "showReuseMessage": false,
+                "clear": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "simple-lldb-start",
+            "type": "shell",
+            "command": "${workspaceFolder}/.vscode/simple_lldb_start.sh",
+            "options": {
+                "shell": {
+                    "executable": "zsh"
+                }
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "new",
+                "showReuseMessage": false,
+                "clear": true
+            },
+            "problemMatcher": [],
+            "isBackground": true
+        },
     ],
     "inputs": [
         {
@@ -58,12 +93,6 @@
             "type": "promptString",
             "description": "Compile Rust code? (true/false, default: false)",
             "default": "false"
-        },
-        {
-            "id": "androidRunId",
-            "type": "promptString",
-            "description": "请输入远程android的程序pid",
-            "default": ""
-        },
+        }
     ]
 }
