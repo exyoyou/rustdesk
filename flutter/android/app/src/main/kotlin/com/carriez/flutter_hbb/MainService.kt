@@ -1,6 +1,7 @@
 package com.carriez.flutter_hbb
 
 import ffi.FFI
+import ffi.AndroidYuv420Frame
 
 /**
  * Capture screen,get video and audio,send to rust.
@@ -50,7 +51,6 @@ import java.util.concurrent.Executors
 import kotlin.concurrent.thread
 import org.json.JSONException
 import org.json.JSONObject
-import java.nio.ByteBuffer
 import kotlin.math.max
 import kotlin.math.min
 
@@ -197,7 +197,16 @@ class MainService : Service() {
                 Log.d(logTag, "from rust:start_camera")
             }
             "stop_camera" -> {
-                 stopCameraCapture()
+                // Debounce/guard: stop from an old service may arrive after a new start during switches.
+                serviceHandler?.postDelayed({
+                    val now = SystemClock.elapsedRealtime()
+                    val sinceStart = now - lastCameraStartAtMs
+                    if (isCameraCapturing && sinceStart < 1000L) {
+                        Log.w(logTag, "Ignore stop_camera due to recent start (${sinceStart}ms ago), likely stale from previous service")
+                    } else {
+                        stopCameraCapture()
+                    }
+                }, 300L)
                 Log.d(logTag, "from rust:stop_camera")
             }
             else -> {
@@ -240,9 +249,14 @@ class MainService : Service() {
     private var cameraDevice: CameraDevice? = null
     private var cameraSession: CameraCaptureSession? = null
     private var cameraImageReader: ImageReader? = null
-    private var cameraI420Buffer: java.nio.ByteBuffer? = null
     private var isCameraCapturing: Boolean = false
     private var activeCameraId: String? = null
+    // Guard concurrent opens/switches: only the latest token is valid
+    private var cameraOpenToken: Int = 0
+    // Watchdog: last time we received a camera frame (elapsedRealtime ms)
+    private var lastCameraFrameAtMs: Long = 0L
+    // Timestamp when current camera session started (elapsedRealtime ms)
+    private var lastCameraStartAtMs: Long = 0L
 
     // audio
     private val audioRecordHandle = AudioRecordHandle(this, { isStart }, { isAudioStart })
@@ -804,8 +818,12 @@ class MainService : Service() {
         if (isCameraCapturing && activeCameraId == cameraId) return true
         // 已在采集中但目标不同，先停止再切换
         if (isCameraCapturing && activeCameraId != cameraId) {
-            stopCameraCapture()
+            // 停止当前相机，但不要在此处增加 token，避免后续新打开的 token 被意外失效
+            stopCameraCaptureInternal(skipCloseSession = false)
         }
+        // 在确保旧相机已停止后，再“统一”地生成新的 openToken，避免切换时出现双重递增导致的新会话帧被误判为过期
+        val openToken = (cameraOpenToken + 1).coerceAtLeast(1)
+        cameraOpenToken = openToken
         val hasPerm = ContextCompat.checkSelfPermission(
             this,
             Manifest.permission.CAMERA
@@ -842,16 +860,30 @@ class MainService : Service() {
                 setOnImageAvailableListener({ reader ->
                     try {
                         reader.acquireLatestImage()?.use { image ->
-                            if (!isCameraCapturing) return@use
-                            val expectedSize = w * h * 3 / 2
-                            if (cameraI420Buffer == null || cameraI420Buffer!!.capacity() != expectedSize) {
-                                cameraI420Buffer = ByteBuffer.allocateDirect(expectedSize)
-                            }
-                            val buf = cameraI420Buffer!!
-                            buf.clear()
-                            yuv420ToI420(image, buf, w, h)
-                            buf.rewind()
-                            FFI.onCameraFrameUpdate(buf)
+                            // Drop frames if capture stopped or a newer open has superseded us
+                            if (!isCameraCapturing || openToken != cameraOpenToken) return@use
+                            // Build AndroidYuv420Frame and hand off to Rust for libyuv packing
+                            val planes = image.planes
+                            // Rewind buffers to ensure position=0 before handing to JNI
+                            planes[0].buffer.rewind()
+                            planes[1].buffer.rewind()
+                            planes[2].buffer.rewind()
+                            // Update watchdog timestamp
+                            lastCameraFrameAtMs = SystemClock.elapsedRealtime()
+                            val frame = AndroidYuv420Frame(
+                                width = w,
+                                height = h,
+                                y = planes[0].buffer,
+                                u = planes[1].buffer,
+                                v = planes[2].buffer,
+                                yRowStride = planes[0].rowStride,
+                                uRowStride = planes[1].rowStride,
+                                vRowStride = planes[2].rowStride,
+                                uPixelStride = planes[1].pixelStride,
+                                vPixelStride = planes[2].pixelStride,
+                                tsNanos = try { image.timestamp } catch (_: Throwable) { 0L }
+                            )
+                            FFI.onCameraYuvFrame(frame)
                         }
                     } catch (_: Exception) {
                     }
@@ -861,6 +893,11 @@ class MainService : Service() {
         try {
             mgr.openCamera(cameraId, object : CameraDevice.StateCallback() {
                 override fun onOpened(device: CameraDevice) {
+                    // Ignore stale callbacks from a previous open attempt
+                    if (openToken != cameraOpenToken) {
+                        try { device.close() } catch (_: Exception) {}
+                        return
+                    }
                     cameraDevice = device
                     try {
                         val surface = cameraImageReader!!.surface
@@ -886,6 +923,10 @@ class MainService : Service() {
                             listOf(surface),
                             object : CameraCaptureSession.StateCallback() {
                                 override fun onConfigured(session: CameraCaptureSession) {
+                                    if (openToken != cameraOpenToken) {
+                                        try { session.close() } catch (_: Exception) {}
+                                        return
+                                    }
                                     cameraSession = session
                                     try {
                                         session.setRepeatingRequest(
@@ -895,20 +936,27 @@ class MainService : Service() {
                                         )
                                         isCameraCapturing = true
                                         activeCameraId = cameraId
+                                        // Reset watchdog time and start watchdog loop
+                                        val nowTs = SystemClock.elapsedRealtime()
+                                        lastCameraStartAtMs = nowTs
+                                        lastCameraFrameAtMs = nowTs
                                         FFI.setFrameRawEnable("camera", true)
                                         Log.d(
                                             logTag,
                                             "Camera capture started: $cameraId @ ${w}x${h}"
                                         )
+                                        scheduleCameraWatchdog(cameraId, openToken)
                                     } catch (e: Exception) {
                                         Log.e(logTag, "setRepeatingRequest failed: $e")
                                         stopCameraCapture()
+                                        scheduleCameraRetry(cameraId)
                                     }
                                 }
 
                                 override fun onConfigureFailed(session: CameraCaptureSession) {
                                     Log.e(logTag, "Camera capture session configure failed")
                                     stopCameraCapture()
+                                    scheduleCameraRetry(cameraId)
                                 }
                             },
                             serviceHandler
@@ -916,6 +964,7 @@ class MainService : Service() {
                     } catch (e: Exception) {
                         Log.e(logTag, "create session failed: $e")
                         stopCameraCapture()
+                        scheduleCameraRetry(cameraId)
                     }
                 }
 
@@ -923,12 +972,14 @@ class MainService : Service() {
                     Log.w(logTag, "Camera disconnected: $cameraId")
                     // 在断开时，可能底层已进入错误/关闭态，避免触发 stopRepeating 的异常日志
                     stopCameraCaptureInternal(skipCloseSession = true)
+                    scheduleCameraRetry(cameraId)
                 }
 
                 override fun onError(device: CameraDevice, error: Int) {
                     Log.e(logTag, "Camera error($error): $cameraId")
                     // 相机发生严重错误时，避免在 close() 内触发 stopRepeating 异常日志
                     stopCameraCaptureInternal(skipCloseSession = true)
+                    scheduleCameraRetry(cameraId)
                 }
             }, serviceHandler)
         } catch (e: SecurityException) {
@@ -950,6 +1001,10 @@ class MainService : Service() {
         Log.d(logTag, "stopCameraCapture${if (skipCloseSession) "(skip session close)" else ""}")
         isCameraCapturing = false
         activeCameraId = null
+        // Invalidate any in-flight callbacks from previous open
+        cameraOpenToken += 1
+        // Reset watchdog
+        lastCameraFrameAtMs = 0L
         // 先关闭帧推送，避免并发拉帧
         try { FFI.setFrameRawEnable("camera", false) } catch (_: Exception) {}
         // 尝试停止/中止请求，防止 close 内部再触发 stopRepeating 异常
@@ -963,89 +1018,39 @@ class MainService : Service() {
         cameraDevice = null
         try { cameraImageReader?.close() } catch (_: Exception) {}
         cameraImageReader = null
-        cameraI420Buffer = null
     }
 
-    // 将 YUV_420_888 三平面按 I420 格式打包到 out：[Y][U][V]
-    private fun yuv420ToI420(image: Image, out: ByteBuffer, width: Int, height: Int) {
-        val yPlane = image.planes[0]
-        val uPlane = image.planes[1]
-        val vPlane = image.planes[2]
-
-        val yBuf = yPlane.buffer
-        val uBuf = uPlane.buffer
-        val vBuf = vPlane.buffer
-
-        val yRowStride = yPlane.rowStride
-        val yPixStride = yPlane.pixelStride
-        val uRowStride = uPlane.rowStride
-        val uPixStride = uPlane.pixelStride
-        val vRowStride = vPlane.rowStride
-        val vPixStride = vPlane.pixelStride
-
-        val chromaW = width / 2
-        val chromaH = height / 2
-
-        // Y 平面
-        var dstPos = 0
-        if (yPixStride == 1) {
-            for (j in 0 until height) {
-                val srcPos = j * yRowStride
-                for (i in 0 until width) {
-                    out.put(dstPos + i, yBuf.get(srcPos + i))
-                }
-                dstPos += width
+    private fun scheduleCameraRetry(cameraId: String, delayMs: Long = 250L) {
+        // Only retry if nothing is currently capturing and target camera is same or none
+        serviceHandler?.postDelayed({
+            if (!isCameraCapturing && (activeCameraId == null || activeCameraId == cameraId)) {
+                Log.w(logTag, "Retry opening camera $cameraId after failure")
+                startCameraCapture(cameraId)
             }
-        } else {
-            for (j in 0 until height) {
-                val yRow = j * yRowStride
-                for (i in 0 until width) {
-                    out.put(dstPos + i, yBuf.get(yRow + i * yPixStride))
-                }
-                dstPos += width
-            }
-        }
-
-        // U 平面
-        var uDst = width * height
-        if (uPixStride == 1) {
-            for (j in 0 until chromaH) {
-                val srcPos = j * uRowStride
-                for (i in 0 until chromaW) {
-                    out.put(uDst + i, uBuf.get(srcPos + i))
-                }
-                uDst += chromaW
-            }
-        } else {
-            for (j in 0 until chromaH) {
-                val row = j * uRowStride
-                for (i in 0 until chromaW) {
-                    out.put(uDst + i, uBuf.get(row + i * uPixStride))
-                }
-                uDst += chromaW
-            }
-        }
-
-        // V 平面
-        var vDst = width * height + chromaW * chromaH
-        if (vPixStride == 1) {
-            for (j in 0 until chromaH) {
-                val srcPos = j * vRowStride
-                for (i in 0 until chromaW) {
-                    out.put(vDst + i, vBuf.get(srcPos + i))
-                }
-                vDst += chromaW
-            }
-        } else {
-            for (j in 0 until chromaH) {
-                val row = j * vRowStride
-                for (i in 0 until chromaW) {
-                    out.put(vDst + i, vBuf.get(row + i * vPixStride))
-                }
-                vDst += chromaW
-            }
-        }
+        }, delayMs)
     }
+
+    private fun scheduleCameraWatchdog(cameraId: String, tokenAtStart: Int, intervalMs: Long = 1000L) {
+        // Periodically check if frames are flowing; if stalled, restart the camera
+        serviceHandler?.postDelayed({
+            // Abort if a new open has started or capture stopped
+            if (tokenAtStart != cameraOpenToken || !isCameraCapturing || activeCameraId != cameraId) {
+                return@postDelayed
+            }
+            val now = SystemClock.elapsedRealtime()
+            val last = lastCameraFrameAtMs
+            // If no frames for > 1.5s, assume session is stuck and restart quickly
+            if (last > 0 && now - last > 1500L) {
+                Log.w(logTag, "Camera watchdog: no frames for ${now - last}ms, restarting $cameraId")
+                stopCameraCaptureInternal(skipCloseSession = true)
+                scheduleCameraRetry(cameraId, 100L)
+                return@postDelayed
+            }
+            // Reschedule next watchdog tick
+            scheduleCameraWatchdog(cameraId, tokenAtStart, intervalMs)
+        }, intervalMs)
+    }
+
     // endregion
 
 }

@@ -6,6 +6,23 @@ import android.content.Context
 import java.nio.ByteBuffer
 
 import com.carriez.flutter_hbb.RdClipboardManager
+import androidx.annotation.Keep
+
+// Encapsulate Android YUV_420_888 planes and metadata for JNI parsing
+@Keep
+data class AndroidYuv420Frame(
+    val width: Int,
+    val height: Int,
+    val y: ByteBuffer,
+    val u: ByteBuffer,
+    val v: ByteBuffer,
+    val yRowStride: Int,
+    val uRowStride: Int,
+    val vRowStride: Int,
+    val uPixelStride: Int,
+    val vPixelStride: Int,
+    val tsNanos: Long = 0L,
+)
 
 object FFI {
     init {
@@ -18,7 +35,8 @@ object FFI {
     external fun startServer(app_dir: String, custom_client_config: String)
     external fun startService()
     external fun onVideoFrameUpdate(buf: ByteBuffer)
-    external fun onCameraFrameUpdate(buf: ByteBuffer)
+    // New API: pass three-plane YUV_420_888 frame; Rust will pack to I420 via libyuv
+    external fun onCameraYuvFrame(frame: AndroidYuv420Frame)
     external fun onAudioFrameUpdate(buf: ByteBuffer)
     external fun translateLocale(localeName: String, input: String): String
     external fun refreshScreen()
