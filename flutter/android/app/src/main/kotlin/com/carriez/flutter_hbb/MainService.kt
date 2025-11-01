@@ -240,7 +240,7 @@ class MainService : Service() {
     private var cameraDevice: CameraDevice? = null
     private var cameraSession: CameraCaptureSession? = null
     private var cameraImageReader: ImageReader? = null
-    private var cameraRgbaBuffer: java.nio.ByteBuffer? = null
+    private var cameraI420Buffer: java.nio.ByteBuffer? = null
     private var isCameraCapturing: Boolean = false
     private var activeCameraId: String? = null
 
@@ -843,12 +843,13 @@ class MainService : Service() {
                     try {
                         reader.acquireLatestImage()?.use { image ->
                             if (!isCameraCapturing) return@use
-                            if (cameraRgbaBuffer == null || cameraRgbaBuffer!!.capacity() != w * h * 4) {
-                                cameraRgbaBuffer = ByteBuffer.allocateDirect(w * h * 4)
+                            val expectedSize = w * h * 3 / 2
+                            if (cameraI420Buffer == null || cameraI420Buffer!!.capacity() != expectedSize) {
+                                cameraI420Buffer = ByteBuffer.allocateDirect(expectedSize)
                             }
-                            val buf = cameraRgbaBuffer!!
+                            val buf = cameraI420Buffer!!
                             buf.clear()
-                            yuv420ToRgba(image, buf, w, h)
+                            yuv420ToI420(image, buf, w, h)
                             buf.rewind()
                             FFI.onCameraFrameUpdate(buf)
                         }
@@ -962,16 +963,19 @@ class MainService : Service() {
         cameraDevice = null
         try { cameraImageReader?.close() } catch (_: Exception) {}
         cameraImageReader = null
-        cameraRgbaBuffer = null
+        cameraI420Buffer = null
     }
 
-    private fun yuv420ToRgba(image: Image, out: ByteBuffer, width: Int, height: Int) {
+    // 将 YUV_420_888 三平面按 I420 格式打包到 out：[Y][U][V]
+    private fun yuv420ToI420(image: Image, out: ByteBuffer, width: Int, height: Int) {
         val yPlane = image.planes[0]
         val uPlane = image.planes[1]
         val vPlane = image.planes[2]
+
         val yBuf = yPlane.buffer
         val uBuf = uPlane.buffer
         val vBuf = vPlane.buffer
+
         val yRowStride = yPlane.rowStride
         val yPixStride = yPlane.pixelStride
         val uRowStride = uPlane.rowStride
@@ -979,29 +983,66 @@ class MainService : Service() {
         val vRowStride = vPlane.rowStride
         val vPixStride = vPlane.pixelStride
 
-        fun clamp(x: Int) = if (x < 0) 0 else if (x > 255) 255 else x
+        val chromaW = width / 2
+        val chromaH = height / 2
 
-        for (j in 0 until height) {
-            val yRow = j * yRowStride
-            val uvRow = (j shr 1) * uRowStride
-            val vvRow = (j shr 1) * vRowStride
-            for (i in 0 until width) {
-                val yIndex = yRow + i * yPixStride
-                val uIndex = uvRow + (i shr 1) * uPixStride
-                val vIndex = vvRow + (i shr 1) * vPixStride
-                val y = (yBuf.get(yIndex).toInt() and 0xFF)
-                val u = (uBuf.get(uIndex).toInt() and 0xFF)
-                val v = (vBuf.get(vIndex).toInt() and 0xFF)
-                val c = y - 16
-                val d = u - 128
-                val e = v - 128
-                val r = clamp((298 * c + 409 * e + 128) shr 8)
-                val g = clamp((298 * c - 100 * d - 208 * e + 128) shr 8)
-                val b = clamp((298 * c + 516 * d + 128) shr 8)
-                out.put(r.toByte())
-                out.put(g.toByte())
-                out.put(b.toByte())
-                out.put(0xFF.toByte())
+        // Y 平面
+        var dstPos = 0
+        if (yPixStride == 1) {
+            for (j in 0 until height) {
+                val srcPos = j * yRowStride
+                for (i in 0 until width) {
+                    out.put(dstPos + i, yBuf.get(srcPos + i))
+                }
+                dstPos += width
+            }
+        } else {
+            for (j in 0 until height) {
+                val yRow = j * yRowStride
+                for (i in 0 until width) {
+                    out.put(dstPos + i, yBuf.get(yRow + i * yPixStride))
+                }
+                dstPos += width
+            }
+        }
+
+        // U 平面
+        var uDst = width * height
+        if (uPixStride == 1) {
+            for (j in 0 until chromaH) {
+                val srcPos = j * uRowStride
+                for (i in 0 until chromaW) {
+                    out.put(uDst + i, uBuf.get(srcPos + i))
+                }
+                uDst += chromaW
+            }
+        } else {
+            for (j in 0 until chromaH) {
+                val row = j * uRowStride
+                for (i in 0 until chromaW) {
+                    out.put(uDst + i, uBuf.get(row + i * uPixStride))
+                }
+                uDst += chromaW
+            }
+        }
+
+        // V 平面
+        var vDst = width * height + chromaW * chromaH
+        if (vPixStride == 1) {
+            for (j in 0 until chromaH) {
+                val srcPos = j * vRowStride
+                for (i in 0 until chromaW) {
+                    out.put(vDst + i, vBuf.get(srcPos + i))
+                }
+                vDst += chromaW
+            }
+        } else {
+            for (j in 0 until chromaH) {
+                val row = j * vRowStride
+                for (i in 0 until chromaW) {
+                    out.put(vDst + i, vBuf.get(row + i * vPixStride))
+                }
+                vDst += chromaW
             }
         }
     }
