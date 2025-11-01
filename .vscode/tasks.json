@@ -22,34 +22,85 @@
         {
             "label": "build-rust-optional-linux",
             "type": "shell",
-            "command": "zsh",
+            "command": "bash",
             "args": [
                 "${workspaceFolder}/.vscode/build_rust.sh",
-                "${input:shouldBuildRust}",
+                // "${input:shouldBuildRust}",
+                "true",
                 "linux"
             ],
+            "options": {
+                "env": {
+                    "VSCODE_TASK": "1"
+                }
+            },
+            "presentation": {
+                "reveal": "silent", // 成功时不弹出，失败时自动显示
+                "panel": "shared",
+                "showReuseMessage": false,
+                "clear": true,
+                "revealProblems": "onProblem", // 仅在有问题时打开 Problems 面板
+                "close": true // 构建成功后自动关闭终端
+            },
+            "problemMatcher": [
+                "$rustc"
+            ]
         },
         {
             "label": "build-rust-optional-android-x86_64",
             "type": "shell",
-            "command": "zsh",
+            "command": "bash",
             "args": [
                 "${workspaceFolder}/.vscode/build_rust.sh",
-                "${input:shouldBuildRust}",
+                // "${input:shouldBuildRust}",
+                "true",
                 "android",
                 "x86_64"
             ],
+            "options": {
+                "env": {
+                    "VSCODE_TASK": "1"
+                }
+            },
+            "presentation": {
+                "reveal": "silent",
+                "panel": "shared",
+                "showReuseMessage": false,
+                "clear": true,
+                "revealProblems": "onProblem",
+                "close": true
+            },
+            "problemMatcher": [
+                "$rustc"
+            ]
         },
         {
             "label": "build-rust-optional-android-arm64",
             "type": "shell",
-            "command": "zsh",
+            "command": "bash",
             "args": [
                 "${workspaceFolder}/.vscode/build_rust.sh",
-                "${input:shouldBuildRust}",
+                // "${input:shouldBuildRust}",
+                "true",
                 "android",
                 "arm64"
             ],
+            "options": {
+                "env": {
+                    "VSCODE_TASK": "1"
+                }
+            },
+            "presentation": {
+                "reveal": "silent",
+                "panel": "shared",
+                "showReuseMessage": false,
+                "clear": true,
+                "revealProblems": "onProblem",
+                "close": true
+            },
+            "problemMatcher": [
+                "$rustc"
+            ]
         },
         {
             "label": "get-android-app-pid",
