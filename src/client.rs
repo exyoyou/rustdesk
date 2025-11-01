@@ -2900,6 +2900,18 @@ pub fn start_video_thread<F, T>(
                             handler.reset(None);
                         }
                     }
+                    MediaData::AudioFrame(af) => {
+                        if let Some(handler) = video_handler.as_mut() {
+                            if handler.record {
+                                let mut rec = handler.recorder.lock().unwrap();
+                                if let Some(r) = rec.as_mut() {
+                                    r.write_audio_opus(&af.data);
+                                } else {
+                                }
+                            } else {
+                            }
+                        }
+                    }
                     MediaData::RecordScreen(start) => {
                         let id = session.lc.read().unwrap().id.clone();
                         if let Some(handler) = video_handler.as_mut() {
