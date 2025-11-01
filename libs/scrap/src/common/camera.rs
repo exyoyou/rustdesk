@@ -308,7 +308,7 @@ impl AndroidCameraCapturer {
 impl TraitCapturer for AndroidCameraCapturer {
     fn frame<'a>(&'a mut self, _timeout: std::time::Duration) -> std::io::Result<Frame<'a>> {
         if get_camera_raw(&mut self.data, &mut self.last_data).is_some() {
-            Ok(Frame::PixelBuffer(crate::PixelBuffer::new(
+            Ok(Frame::PixelBuffer(crate::PixelBuffer::new_i420(
                 &self.data,
                 self.width,
                 self.height,

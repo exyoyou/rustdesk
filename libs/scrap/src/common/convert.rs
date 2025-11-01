@@ -60,6 +60,91 @@ pub fn convert_to_yuv(
     );
 
     match (src_pixfmt, dst_fmt.pixfmt) {
+        // Fast-path: I420 source to I420 destination (plane copy with possible stride differences)
+        (crate::Pixfmt::I420, crate::Pixfmt::I420) => {
+            let dst_stride_y = dst_fmt.stride[0];
+            let dst_stride_uv = dst_fmt.stride[1];
+            // Allocate enough to safely address Y + U + V using dst_fmt.u/v offsets.
+            // Keep behavior consistent with existing I420 RGB paths using slight over-allocation for safety.
+            dst.resize(dst_fmt.h * dst_stride_y * 2, 0);
+
+            let w = src_width;
+            let h = src_height;
+            let cw = w / 2;
+            let ch = h / 2;
+
+            // Source is compact I420 per PixelBuffer::new_i420: stride_y = w, stride_u/v = w/2
+            let src_y_stride = w;
+            let src_uv_stride = cw;
+            let src_y = &src[..w * h];
+            let src_u = &src[w * h..w * h + cw * ch];
+            let src_v = &src[w * h + cw * ch..w * h + cw * ch * 2];
+
+            // Dest planes
+            let (dst_y_off, dst_u_off, dst_v_off) = (0, dst_fmt.u, dst_fmt.v);
+
+            // Copy Y plane row by row respecting destination stride
+            for j in 0..h {
+                let src_row = &src_y[j * src_y_stride..j * src_y_stride + w];
+                let dst_row = &mut dst[dst_y_off + j * dst_stride_y..dst_y_off + j * dst_stride_y + w];
+                dst_row.copy_from_slice(src_row);
+            }
+            // Copy U plane
+            for j in 0..ch {
+                let src_row = &src_u[j * src_uv_stride..j * src_uv_stride + cw];
+                let base = dst_u_off + j * dst_stride_uv;
+                let dst_row = &mut dst[base..base + cw];
+                dst_row.copy_from_slice(src_row);
+            }
+            // Copy V plane
+            for j in 0..ch {
+                let src_row = &src_v[j * src_uv_stride..j * src_uv_stride + cw];
+                let base = dst_v_off + j * dst_stride_uv;
+                let dst_row = &mut dst[base..base + cw];
+                dst_row.copy_from_slice(src_row);
+            }
+        }
+        // I420 source to NV12 destination (interleave UV)
+        (crate::Pixfmt::I420, crate::Pixfmt::NV12) => {
+            let dst_stride_y = dst_fmt.stride[0];
+            let dst_stride_uv = dst_fmt.stride[1];
+            // Allocate with alignment similar to existing NV12 RGB paths
+            let align = |x: usize| (x + 63) / 64 * 64;
+            dst.resize(align(dst_fmt.h) * (align(dst_stride_y) + align(dst_stride_uv)), 0);
+
+            let w = src_width;
+            let h = src_height;
+            let cw = w / 2;
+            let ch = h / 2;
+
+            // Source compact I420 planes
+            let src_y_stride = w;
+            let src_uv_stride = cw;
+            let src_y = &src[..w * h];
+            let src_u = &src[w * h..w * h + cw * ch];
+            let src_v = &src[w * h + cw * ch..w * h + cw * ch * 2];
+
+            // Dest planes: Y then interleaved UV at offset u
+            let (dst_y_off, dst_uv_off) = (0, dst_fmt.u);
+
+            // Copy Y plane
+            for j in 0..h {
+                let src_row = &src_y[j * src_y_stride..j * src_y_stride + w];
+                let dst_row = &mut dst[dst_y_off + j * dst_stride_y..dst_y_off + j * dst_stride_y + w];
+                dst_row.copy_from_slice(src_row);
+            }
+            // Interleave U and V into UV plane
+            for j in 0..ch {
+                let src_u_row = &src_u[j * src_uv_stride..j * src_uv_stride + cw];
+                let src_v_row = &src_v[j * src_uv_stride..j * src_uv_stride + cw];
+                let mut di = dst_uv_off + j * dst_stride_uv;
+                for i in 0..cw {
+                    dst[di] = src_u_row[i];
+                    dst[di + 1] = src_v_row[i];
+                    di += 2;
+                }
+            }
+        }
         (crate::Pixfmt::BGRA, crate::Pixfmt::I420)
         | (crate::Pixfmt::RGBA, crate::Pixfmt::I420)
         | (crate::Pixfmt::RGB565LE, crate::Pixfmt::I420) => {
