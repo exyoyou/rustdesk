@@ -1378,6 +1378,7 @@ impl Connection {
         #[cfg(any(
             target_os = "windows",
             target_os = "linux",
+            target_os = "android",
             all(target_os = "macos", feature = "unix-file-copy-paste")
         ))]
         let mut platform_additions = serde_json::Map::new();
@@ -1426,12 +1427,17 @@ impl Connection {
             platform_additions.insert("has_file_clipboard".into(), json!(has_file_clipboard));
         }
 
-        #[cfg(any(target_os = "windows", target_os = "linux"))]
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "android"))]
         {
             platform_additions.insert("support_view_camera".into(), json!(true));
         }
 
-        #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+        #[cfg(any(
+            target_os = "linux",
+            target_os = "windows",
+            target_os = "macos",
+            target_os = "android",
+        ))]
         if !platform_additions.is_empty() {
             pi.platform_additions = serde_json::to_string(&platform_additions).unwrap_or("".into());
         }
@@ -1521,7 +1527,7 @@ impl Connection {
 
             pi.displays = camera::Cameras::all_info().unwrap_or(Vec::new());
             pi.current_display = camera::PRIMARY_CAMERA_IDX as _;
-            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            #[cfg(not(any(target_os = "ios")))]
             {
                 pi.resolutions = Some(SupportedResolutions {
                     resolutions: camera::Cameras::get_camera_resolution(

@@ -21,6 +21,14 @@ use crate::{Frame, TraitCapturer};
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 use crate::{PixelBuffer, Pixfmt};
 
+// Android: fetch camera list via MainService.getCameraListJson through JNI
+#[cfg(target_os = "android")]
+use crate::android::ffi::call_camera_list_json;
+#[cfg(target_os = "android")]
+use serde::Deserialize;
+#[cfg(target_os = "android")]
+use crate::android::ffi::{get_camera_raw, start_camera_capture, stop_camera_capture};
+
 pub const PRIMARY_CAMERA_IDX: usize = 0;
 lazy_static::lazy_static! {
     static ref SYNC_CAMERA_DISPLAYS: Arc<Mutex<Vec<DisplayInfo>>> = Arc::new(Mutex::new(Vec::new()));
@@ -158,7 +166,168 @@ impl Cameras {
     }
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+// Android-side camera info shape returned by MainService.getCameraListJson
+#[cfg(target_os = "android")]
+#[derive(Debug, Deserialize, Clone)]
+struct AndroidCameraInfo {
+    id: String,
+    name: String,
+    width: i32,
+    height: i32,
+    #[allow(dead_code)]
+    facing: i32,
+}
+
+#[cfg(target_os = "android")]
+lazy_static::lazy_static! {
+    static ref ANDROID_CAMERA_INFOS: Arc<Mutex<Vec<AndroidCameraInfo>>> = Arc::new(Mutex::new(Vec::new()));
+}
+
+// Android implementation
+#[cfg(target_os = "android")]
+impl Cameras {
+    pub fn all_info() -> ResultType<Vec<DisplayInfo>> {
+        // 调用 Android 层拿到相机信息 JSON
+        let json = match call_camera_list_json() {
+            Ok(s) => s,
+            Err(e) => bail!("Query cameras error (android jni): {}", e),
+        };
+        let cams: Vec<AndroidCameraInfo> = match serde_json::from_str(&json) {
+            Ok(v) => v,
+            Err(e) => bail!("Parse android camera json failed: {}", e),
+        };
+
+        let mut camera_displays = SYNC_CAMERA_DISPLAYS.lock().unwrap();
+        camera_displays.clear();
+        // 保存原始 Android 相机信息，供后续启动捕获使用
+        let mut android_infos = ANDROID_CAMERA_INFOS.lock().unwrap();
+        *android_infos = cams.clone();
+
+        // 横向排列（与桌面端一致），x 累加。
+        let mut x = 0;
+        for c in cams.iter() {
+            let width = c.width.max(0);
+            let height = c.height.max(0);
+            camera_displays.push(DisplayInfo {
+                x,
+                y: 0,
+                name: c.name.clone(),
+                width,
+                height,
+                online: true,
+                cursor_embedded: false,
+                scale: 1.0,
+                original_resolution: Some(Resolution {
+                    width,
+                    height,
+                    ..Default::default()
+                })
+                .into(),
+                ..Default::default()
+            });
+            x += width;
+        }
+        Ok(camera_displays.clone())
+    }
+
+    pub fn exists(index: usize) -> bool {
+        // 依赖已缓存的列表；若为空则尝试刷新一次
+        let len = {
+            let v = SYNC_CAMERA_DISPLAYS.lock().unwrap();
+            v.len()
+        };
+        if len == 0 {
+            if Self::all_info().is_err() {
+                return false;
+            }
+        }
+        let v = SYNC_CAMERA_DISPLAYS.lock().unwrap();
+        index < v.len()
+    }
+
+    pub fn get_camera_resolution(index: usize) -> ResultType<Resolution> {
+        let v = SYNC_CAMERA_DISPLAYS.lock().unwrap();
+        if index < v.len() {
+            let d = &v[index];
+            Ok(Resolution {
+                width: d.width,
+                height: d.height,
+                ..Default::default()
+            })
+        } else {
+            bail!("No camera found at index {}", index)
+        }
+    }
+
+    pub fn get_sync_cameras() -> Vec<DisplayInfo> {
+        SYNC_CAMERA_DISPLAYS.lock().unwrap().clone()
+    }
+
+    pub fn get_capturer(current: usize) -> ResultType<Box<dyn TraitCapturer>> {
+        // 构造 Android 相机采集器：从 JNI 的 get_video_raw 读取 RGBA 帧
+        // 依赖 Java 侧在打开相机后通过 FFI.onVideoFrameUpdate 推送帧数据
+        if !Self::exists(current) {
+            bail!("No camera found at index {}", current);
+        }
+        // 获取相机分辨率与 id
+        let displays = SYNC_CAMERA_DISPLAYS.lock().unwrap();
+        let d = &displays[current];
+        let infos = ANDROID_CAMERA_INFOS.lock().unwrap();
+        if current >= infos.len() {
+            bail!("No camera info for index {}", current);
+        }
+        let cam_id = infos[current].id.clone();
+
+        // 启动 Android 侧相机采集
+        if let Err(e) = start_camera_capture(&cam_id) {
+            bail!("start_camera_capture failed: {}", e);
+        }
+
+        Ok(Box::new(AndroidCameraCapturer::new(d.width as usize, d.height as usize, cam_id)))
+    }
+}
+
+// Android 专用相机采集器实现：通过 get_video_raw 拉取 RGBA 帧
+#[cfg(target_os = "android")]
+struct AndroidCameraCapturer {
+    width: usize,
+    height: usize,
+    data: Vec<u8>,
+    last_data: Vec<u8>,
+    camera_id: String,
+}
+
+#[cfg(target_os = "android")]
+impl AndroidCameraCapturer {
+    fn new(width: usize, height: usize, camera_id: String) -> Self {
+        Self { width, height, data: Vec::new(), last_data: Vec::new(), camera_id }
+    }
+}
+
+#[cfg(target_os = "android")]
+impl TraitCapturer for AndroidCameraCapturer {
+    fn frame<'a>(&'a mut self, _timeout: std::time::Duration) -> std::io::Result<Frame<'a>> {
+        if get_camera_raw(&mut self.data, &mut self.last_data).is_some() {
+            Ok(Frame::PixelBuffer(crate::PixelBuffer::new(
+                &self.data,
+                self.width,
+                self.height,
+            )))
+        } else {
+            Err(std::io::ErrorKind::WouldBlock.into())
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+impl Drop for AndroidCameraCapturer {
+    fn drop(&mut self) {
+        // 停止 Android 侧相机采集（忽略错误）
+        let _ = stop_camera_capture();
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "android")))]
 impl Cameras {
     pub fn all_info() -> ResultType<Vec<DisplayInfo>> {
         return Ok(Vec::new());

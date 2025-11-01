@@ -24,6 +24,7 @@ lazy_static! {
     static ref MAIN_SERVICE_CTX: RwLock<Option<GlobalRef>> = RwLock::new(None); // MainService -> video service / audio service / info
     static ref APPLICATION_CONTEXT: RwLock<Option<GlobalRef>> = RwLock::new(None);
     static ref VIDEO_RAW: Mutex<FrameRaw> = Mutex::new(FrameRaw::new("video", MAX_VIDEO_FRAME_TIMEOUT));
+    static ref CAMERA_RAW: Mutex<FrameRaw> = Mutex::new(FrameRaw::new("camera", MAX_VIDEO_FRAME_TIMEOUT));
     static ref AUDIO_RAW: Mutex<FrameRaw> = Mutex::new(FrameRaw::new("audio", MAX_AUDIO_FRAME_TIMEOUT));
     static ref NDK_CONTEXT_INITED: Mutex<bool> = Default::default();
     static ref MEDIA_CODEC_INFOS: RwLock<Option<MediaCodecInfos>> = RwLock::new(None);
@@ -108,6 +109,10 @@ pub fn get_video_raw<'a>(dst: &mut Vec<u8>, last: &mut Vec<u8>) -> Option<()> {
     VIDEO_RAW.lock().ok()?.take(dst, last)
 }
 
+pub fn get_camera_raw<'a>(dst: &mut Vec<u8>, last: &mut Vec<u8>) -> Option<()> {
+    CAMERA_RAW.lock().ok()?.take(dst, last)
+}
+
 pub fn get_audio_raw<'a>(dst: &mut Vec<u8>, last: &mut Vec<u8>) -> Option<()> {
     AUDIO_RAW.lock().ok()?.take(dst, last)
 }
@@ -130,6 +135,20 @@ pub extern "system" fn Java_ffi_FFI_onVideoFrameUpdate(
     if let Ok(data) = env.get_direct_buffer_address(&jb) {
         if let Ok(len) = env.get_direct_buffer_capacity(&jb) {
             VIDEO_RAW.lock().unwrap().update(data, len);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_ffi_FFI_onCameraFrameUpdate(
+    env: JNIEnv,
+    _class: JClass,
+    buffer: JObject,
+) {
+    let jb = JByteBuffer::from(buffer);
+    if let Ok(data) = env.get_direct_buffer_address(&jb) {
+        if let Ok(len) = env.get_direct_buffer_capacity(&jb) {
+            CAMERA_RAW.lock().unwrap().update(data, len);
         }
     }
 }
@@ -182,6 +201,8 @@ pub extern "system" fn Java_ffi_FFI_setFrameRawEnable(
         let value = value.eq(&1);
         if name.eq("video") {
             VIDEO_RAW.lock().unwrap().set_enable(value);
+        } else if name.eq("camera") {
+            CAMERA_RAW.lock().unwrap().set_enable(value);
         } else if name.eq("audio") {
             AUDIO_RAW.lock().unwrap().set_enable(value);
         }
@@ -508,4 +529,39 @@ pub extern "system" fn Java_ffi_FFI_onAppStart(mut env: JNIEnv, _class: JClass, 
             try_init_rustls_platform_verifier(&mut env, context_jobject);
         }
     }
+}
+
+/// 获取所有摄像头信息（调用 MainService.getCameraListJson）
+pub fn call_camera_list_json() -> JniResult<String> {
+    if let (Some(jvm), Some(ctx)) = (
+        JVM.read().unwrap().as_ref(),
+        MAIN_SERVICE_CTX.read().unwrap().as_ref(),
+    ) {
+        let mut env = jvm.attach_current_thread_as_daemon()?;
+        // 调用实例方法 MainService.getCameraListJson(Context): String
+        let res_obj = env
+            .call_method(
+                ctx,
+                "getCameraListJson",
+                "(Landroid/content/Context;)Ljava/lang/String;",
+                &[JValue::Object(&ctx.as_obj())],
+            )?
+            .l()?;
+        // 转为 Rust String
+        let jstr = JString::from(res_obj);
+        let out = env.get_string(&jstr)?.to_string_lossy().to_string();
+        Ok(out)
+    } else {
+        Err(JniError::ThrowFailed(-1))
+    }
+}
+
+/// 启动相机采集：调用 MainService.rustSetByName("start_camera", camera_id, "")
+pub fn start_camera_capture(camera_id: &str) -> JniResult<()> {
+    call_main_service_set_by_name("start_camera", Some(camera_id), None)
+}
+
+/// 停止相机采集：调用 MainService.rustSetByName("stop_camera", "", "")
+pub fn stop_camera_capture() -> JniResult<()> {
+    call_main_service_set_by_name("stop_camera", None, None)
 }

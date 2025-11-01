@@ -30,6 +30,7 @@ class ServerModel with ChangeNotifier {
   bool _inputOk = false;
   bool _audioOk = false;
   bool _fileOk = false;
+  bool _cameraOk = false;
   bool _clipboardOk = false;
   bool _showElevation = false;
   bool hideCm = false;
@@ -60,6 +61,8 @@ class ServerModel with ChangeNotifier {
   bool get audioOk => _audioOk;
 
   bool get fileOk => _fileOk;
+
+  bool get cameraOk => _cameraOk;
 
   bool get clipboardOk => _clipboardOk;
 
@@ -222,6 +225,15 @@ class ServerModel with ChangeNotifier {
     // clipboard
     final clipOption = await bind.mainGetOption(key: kOptionEnableClipboard);
     _clipboardOk = clipOption != 'N';
+
+    // camera
+    if (!await AndroidPermissionManager.check('android.permission.CAMERA')) {
+      _cameraOk = false;
+      bind.mainSetOption(key: 'enable_camera', value: 'N');
+    } else {
+      final cameraOption = await bind.mainGetOption(key: 'enable_camera');
+      _cameraOk = cameraOption != 'N';
+    }
 
     notifyListeners();
   }
@@ -804,6 +816,25 @@ class ServerModel with ChangeNotifier {
         WakelockPlus.disable();
       }
     }
+  }
+
+  toggleCamera() async {
+    if (clients.isNotEmpty) {
+      await showClientsMayNotBeChangedAlert(parent.target);
+    }
+    if (!_cameraOk && !await AndroidPermissionManager.check('android.permission.CAMERA')) {
+      final res = await AndroidPermissionManager.request('android.permission.CAMERA');
+      if (!res) {
+        showToast(translate('Failed'));
+        return;
+      }
+    }
+    _cameraOk = !_cameraOk;
+    bind.mainSetOption(
+      key: 'enable_camera',
+      value: _cameraOk ? defaultOptionYes : 'N',
+    );
+    notifyListeners();
   }
 }
 
