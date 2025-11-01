@@ -35,6 +35,7 @@ import android.os.*
 import android.util.DisplayMetrics
 import android.util.Log
 import android.util.Size
+import android.graphics.Rect
 import android.view.Surface
 import android.view.Surface.FRAME_RATE_COMPATIBILITY_DEFAULT
 import android.view.WindowManager
@@ -849,7 +850,6 @@ class MainService : Service() {
                             buf.clear()
                             yuv420ToRgba(image, buf, w, h)
                             buf.rewind()
-                            Log.d(logTag, "buf ${buf.toString()}")
                             FFI.onCameraFrameUpdate(buf)
                         }
                     } catch (_: Exception) {
@@ -866,6 +866,20 @@ class MainService : Service() {
                         val req = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                             addTarget(surface)
                             set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+                            // 设置最小可用倍率（最广角）
+                            try {
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                    val zoomRange = chars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
+                                    val minZoom = zoomRange?.lower ?: 1.0f
+                                    set(CaptureRequest.CONTROL_ZOOM_RATIO, minZoom)
+                                } else {
+                                    val active: Rect? = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+                                    if (active != null) {
+                                        // 1.0x 缩放 = 使用完整 active array（无裁剪）
+                                        set(CaptureRequest.SCALER_CROP_REGION, active)
+                                    }
+                                }
+                            } catch (_: Exception) {}
                         }
                         device.createCaptureSession(
                             listOf(surface),
@@ -906,12 +920,14 @@ class MainService : Service() {
 
                 override fun onDisconnected(device: CameraDevice) {
                     Log.w(logTag, "Camera disconnected: $cameraId")
-                    stopCameraCapture()
+                    // 在断开时，可能底层已进入错误/关闭态，避免触发 stopRepeating 的异常日志
+                    stopCameraCaptureInternal(skipCloseSession = true)
                 }
 
                 override fun onError(device: CameraDevice, error: Int) {
                     Log.e(logTag, "Camera error($error): $cameraId")
-                    stopCameraCapture()
+                    // 相机发生严重错误时，避免在 close() 内触发 stopRepeating 异常日志
+                    stopCameraCaptureInternal(skipCloseSession = true)
                 }
             }, serviceHandler)
         } catch (e: SecurityException) {
@@ -926,27 +942,27 @@ class MainService : Service() {
 
     @Keep
     fun stopCameraCapture() {
-        Log.d(logTag, "stopCameraCapture")
+        stopCameraCaptureInternal(skipCloseSession = false)
+    }
+
+    private fun stopCameraCaptureInternal(skipCloseSession: Boolean) {
+        Log.d(logTag, "stopCameraCapture${if (skipCloseSession) "(skip session close)" else ""}")
         isCameraCapturing = false
         activeCameraId = null
-        try {
-            cameraSession?.close()
-        } catch (_: Exception) {
+        // 先关闭帧推送，避免并发拉帧
+        try { FFI.setFrameRawEnable("camera", false) } catch (_: Exception) {}
+        // 尝试停止/中止请求，防止 close 内部再触发 stopRepeating 异常
+        if (!skipCloseSession) {
+            try { cameraSession?.stopRepeating() } catch (_: Exception) {}
+            try { cameraSession?.abortCaptures() } catch (_: Exception) {}
+            try { cameraSession?.close() } catch (_: Exception) {}
         }
         cameraSession = null
-        try {
-            cameraDevice?.close()
-        } catch (_: Exception) {
-        }
+        try { cameraDevice?.close() } catch (_: Exception) {}
         cameraDevice = null
-        try {
-            cameraImageReader?.close()
-        } catch (_: Exception) {
-        }
+        try { cameraImageReader?.close() } catch (_: Exception) {}
         cameraImageReader = null
         cameraRgbaBuffer = null
-        // 不影响屏幕采集开关，仅关闭相机帧推送
-        FFI.setFrameRawEnable("camera", false)
     }
 
     private fun yuv420ToRgba(image: Image, out: ByteBuffer, width: Int, height: Int) {
