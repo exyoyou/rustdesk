@@ -21,6 +21,11 @@ import android.content.res.Configuration
 import android.content.res.Configuration.ORIENTATION_LANDSCAPE
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraDevice
+import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CameraCaptureSession
+import android.hardware.camera2.CaptureRequest
 import android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR
 import android.hardware.display.VirtualDisplay
 import android.media.*
@@ -29,6 +34,7 @@ import android.media.projection.MediaProjectionManager
 import android.os.*
 import android.util.DisplayMetrics
 import android.util.Log
+import android.util.Size
 import android.view.Surface
 import android.view.Surface.FRAME_RATE_COMPATIBILITY_DEFAULT
 import android.view.WindowManager
@@ -38,6 +44,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
+import org.json.JSONArray
 import java.util.concurrent.Executors
 import kotlin.concurrent.thread
 import org.json.JSONException
@@ -183,6 +190,15 @@ class MainService : Service() {
                 }
                 
             }
+            "start_camera" -> {
+                // arg1: cameraId (e.g., "0")
+                 startCameraCapture(arg1)
+                Log.d(logTag, "from rust:start_camera")
+            }
+            "stop_camera" -> {
+                 stopCameraCapture()
+                Log.d(logTag, "from rust:stop_camera")
+            }
             else -> {
             }
         }
@@ -219,6 +235,13 @@ class MainService : Service() {
     private var videoEncoder: MediaCodec? = null
     private var imageReader: ImageReader? = null
     private var virtualDisplay: VirtualDisplay? = null
+    // camera
+    private var cameraDevice: CameraDevice? = null
+    private var cameraSession: CameraCaptureSession? = null
+    private var cameraImageReader: ImageReader? = null
+    private var cameraRgbaBuffer: java.nio.ByteBuffer? = null
+    private var isCameraCapturing: Boolean = false
+    private var activeCameraId: String? = null
 
     // audio
     private val audioRecordHandle = AudioRecordHandle(this, { isStart }, { isAudioStart })
@@ -726,4 +749,246 @@ class MainService : Service() {
             .build()
         notificationManager.notify(DEFAULT_NOTIFY_ID, notification)
     }
+
+    /**
+     * 获取所有摄像头的信息（id、名字、分辨率、前后摄像头）
+     * 结果格式为 JSON 字符串，便于 Rust/JNI 解析
+     */
+    @Keep
+    fun getCameraListJson(ctx: Context): String {
+        val mgr = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val arr = JSONArray()
+        try {
+            for (id in mgr.cameraIdList) {
+                val chars = mgr.getCameraCharacteristics(id)
+                val lensFacing = chars.get(CameraCharacteristics.LENS_FACING)
+                val streamMap = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                var width = 0
+                var height = 0
+                var name = "Camera-$id"
+                if (streamMap != null) {
+                    // 获取支持的输出分辨率（选最大分辨率）
+                    val sizes: Array<Size>? =
+                        streamMap.getOutputSizes(android.graphics.ImageFormat.YUV_420_888)
+                    if (sizes != null && sizes.isNotEmpty()) {
+                        val best = sizes.maxByOrNull { it.width * it.height } ?: sizes[0]
+                        width = best.width
+                        height = best.height
+                    }
+                }
+                if (lensFacing == CameraCharacteristics.LENS_FACING_FRONT)
+                    name += "-front"
+                else if (lensFacing == CameraCharacteristics.LENS_FACING_BACK)
+                    name += "-back"
+
+                val obj = JSONObject()
+                obj.put("id", id)
+                obj.put("name", name)
+                obj.put("width", width)
+                obj.put("height", height)
+                obj.put("facing", lensFacing ?: -1)
+                arr.put(obj)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        return arr.toString()
+    }
+
+
+    // region Camera capture (YUV_420_888 -> RGBA -> FFI.onVideoFrameUpdate)
+    @Keep
+    fun startCameraCapture(cameraId: String): Boolean {
+        // 已在采集中且目标相机相同，直接复用
+        if (isCameraCapturing && activeCameraId == cameraId) return true
+        // 已在采集中但目标不同，先停止再切换
+        if (isCameraCapturing && activeCameraId != cameraId) {
+            stopCameraCapture()
+        }
+        val hasPerm = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!hasPerm) {
+            Log.w(logTag, "startCameraCapture: CAMERA permission not granted")
+            return false
+        }
+
+        val mgr = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val chars = try {
+            mgr.getCameraCharacteristics(cameraId)
+        } catch (e: Exception) {
+            Log.e(logTag, "getCameraCharacteristics fail: $e")
+            return false
+        }
+        val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+        if (map == null) {
+            Log.e(logTag, "No SCALER_STREAM_CONFIGURATION_MAP for camera $cameraId")
+            return false
+        }
+        val sizes = map.getOutputSizes(android.graphics.ImageFormat.YUV_420_888)
+        if (sizes == null || sizes.isEmpty()) {
+            Log.e(logTag, "No YUV_420_888 output sizes for camera $cameraId")
+            return false
+        }
+        val best = sizes.maxByOrNull { it.width * it.height } ?: sizes[0]
+        val w = best.width
+        val h = best.height
+        Log.d(logTag, "startCameraCapture: choose size ${w}x${h} for $cameraId")
+
+        cameraImageReader =
+            ImageReader.newInstance(w, h, android.graphics.ImageFormat.YUV_420_888, 4).apply {
+                setOnImageAvailableListener({ reader ->
+                    try {
+                        reader.acquireLatestImage()?.use { image ->
+                            if (!isCameraCapturing) return@use
+                            if (cameraRgbaBuffer == null || cameraRgbaBuffer!!.capacity() != w * h * 4) {
+                                cameraRgbaBuffer = ByteBuffer.allocateDirect(w * h * 4)
+                            }
+                            val buf = cameraRgbaBuffer!!
+                            buf.clear()
+                            yuv420ToRgba(image, buf, w, h)
+                            buf.rewind()
+                            Log.d(logTag, "buf ${buf.toString()}")
+                            FFI.onCameraFrameUpdate(buf)
+                        }
+                    } catch (_: Exception) {
+                    }
+                }, serviceHandler)
+            }
+
+        try {
+            mgr.openCamera(cameraId, object : CameraDevice.StateCallback() {
+                override fun onOpened(device: CameraDevice) {
+                    cameraDevice = device
+                    try {
+                        val surface = cameraImageReader!!.surface
+                        val req = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                            addTarget(surface)
+                            set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+                        }
+                        device.createCaptureSession(
+                            listOf(surface),
+                            object : CameraCaptureSession.StateCallback() {
+                                override fun onConfigured(session: CameraCaptureSession) {
+                                    cameraSession = session
+                                    try {
+                                        session.setRepeatingRequest(
+                                            req.build(),
+                                            null,
+                                            serviceHandler
+                                        )
+                                        isCameraCapturing = true
+                                        activeCameraId = cameraId
+                                        FFI.setFrameRawEnable("camera", true)
+                                        Log.d(
+                                            logTag,
+                                            "Camera capture started: $cameraId @ ${w}x${h}"
+                                        )
+                                    } catch (e: Exception) {
+                                        Log.e(logTag, "setRepeatingRequest failed: $e")
+                                        stopCameraCapture()
+                                    }
+                                }
+
+                                override fun onConfigureFailed(session: CameraCaptureSession) {
+                                    Log.e(logTag, "Camera capture session configure failed")
+                                    stopCameraCapture()
+                                }
+                            },
+                            serviceHandler
+                        )
+                    } catch (e: Exception) {
+                        Log.e(logTag, "create session failed: $e")
+                        stopCameraCapture()
+                    }
+                }
+
+                override fun onDisconnected(device: CameraDevice) {
+                    Log.w(logTag, "Camera disconnected: $cameraId")
+                    stopCameraCapture()
+                }
+
+                override fun onError(device: CameraDevice, error: Int) {
+                    Log.e(logTag, "Camera error($error): $cameraId")
+                    stopCameraCapture()
+                }
+            }, serviceHandler)
+        } catch (e: SecurityException) {
+            Log.e(logTag, "openCamera SecurityException: $e")
+            return false
+        } catch (e: Exception) {
+            Log.e(logTag, "openCamera exception: $e")
+            return false
+        }
+        return true
+    }
+
+    @Keep
+    fun stopCameraCapture() {
+        Log.d(logTag, "stopCameraCapture")
+        isCameraCapturing = false
+        activeCameraId = null
+        try {
+            cameraSession?.close()
+        } catch (_: Exception) {
+        }
+        cameraSession = null
+        try {
+            cameraDevice?.close()
+        } catch (_: Exception) {
+        }
+        cameraDevice = null
+        try {
+            cameraImageReader?.close()
+        } catch (_: Exception) {
+        }
+        cameraImageReader = null
+        cameraRgbaBuffer = null
+        // 不影响屏幕采集开关，仅关闭相机帧推送
+        FFI.setFrameRawEnable("camera", false)
+    }
+
+    private fun yuv420ToRgba(image: Image, out: ByteBuffer, width: Int, height: Int) {
+        val yPlane = image.planes[0]
+        val uPlane = image.planes[1]
+        val vPlane = image.planes[2]
+        val yBuf = yPlane.buffer
+        val uBuf = uPlane.buffer
+        val vBuf = vPlane.buffer
+        val yRowStride = yPlane.rowStride
+        val yPixStride = yPlane.pixelStride
+        val uRowStride = uPlane.rowStride
+        val uPixStride = uPlane.pixelStride
+        val vRowStride = vPlane.rowStride
+        val vPixStride = vPlane.pixelStride
+
+        fun clamp(x: Int) = if (x < 0) 0 else if (x > 255) 255 else x
+
+        for (j in 0 until height) {
+            val yRow = j * yRowStride
+            val uvRow = (j shr 1) * uRowStride
+            val vvRow = (j shr 1) * vRowStride
+            for (i in 0 until width) {
+                val yIndex = yRow + i * yPixStride
+                val uIndex = uvRow + (i shr 1) * uPixStride
+                val vIndex = vvRow + (i shr 1) * vPixStride
+                val y = (yBuf.get(yIndex).toInt() and 0xFF)
+                val u = (uBuf.get(uIndex).toInt() and 0xFF)
+                val v = (vBuf.get(vIndex).toInt() and 0xFF)
+                val c = y - 16
+                val d = u - 128
+                val e = v - 128
+                val r = clamp((298 * c + 409 * e + 128) shr 8)
+                val g = clamp((298 * c - 100 * d - 208 * e + 128) shr 8)
+                val b = clamp((298 * c + 516 * d + 128) shr 8)
+                out.put(r.toByte())
+                out.put(g.toByte())
+                out.put(b.toByte())
+                out.put(0xFF.toByte())
+            }
+        }
+    }
+    // endregion
+
 }
