@@ -264,8 +264,8 @@ impl Cameras {
     }
 
     pub fn get_capturer(current: usize) -> ResultType<Box<dyn TraitCapturer>> {
-        // 构造 Android 相机采集器：从 JNI 的 get_video_raw 读取 RGBA 帧
-        // 依赖 Java 侧在打开相机后通过 FFI.onVideoFrameUpdate 推送帧数据
+        // 构造 Android 相机采集器：从 JNI 的 get_camera_raw 读取 I420 帧
+        // 依赖 Java 侧在打开相机后通过 FFI.onCameraYuvFrame 推送三平面数据，Rust 侧用 libyuv 打包为 I420
         if !Self::exists(current) {
             bail!("No camera found at index {}", current);
         }
@@ -287,7 +287,7 @@ impl Cameras {
     }
 }
 
-// Android 专用相机采集器实现：通过 get_video_raw 拉取 RGBA 帧
+// Android 专用相机采集器实现：通过 get_camera_raw 拉取 I420 帧
 #[cfg(target_os = "android")]
 struct AndroidCameraCapturer {
     width: usize,

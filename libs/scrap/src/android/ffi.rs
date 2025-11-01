@@ -25,6 +25,8 @@ lazy_static! {
     static ref APPLICATION_CONTEXT: RwLock<Option<GlobalRef>> = RwLock::new(None);
     static ref VIDEO_RAW: Mutex<FrameRaw> = Mutex::new(FrameRaw::new("video", MAX_VIDEO_FRAME_TIMEOUT));
     static ref CAMERA_RAW: Mutex<FrameRaw> = Mutex::new(FrameRaw::new("camera", MAX_VIDEO_FRAME_TIMEOUT));
+    // Own the packed I420 buffer to keep memory valid across JNI returns
+    static ref CAMERA_RAW_OWNED: Mutex<Vec<u8>> = Mutex::new(Vec::new());
     static ref AUDIO_RAW: Mutex<FrameRaw> = Mutex::new(FrameRaw::new("audio", MAX_AUDIO_FRAME_TIMEOUT));
     static ref NDK_CONTEXT_INITED: Mutex<bool> = Default::default();
     static ref MEDIA_CODEC_INFOS: RwLock<Option<MediaCodecInfos>> = RwLock::new(None);
@@ -139,18 +141,158 @@ pub extern "system" fn Java_ffi_FFI_onVideoFrameUpdate(
     }
 }
 
+// Deprecated path kept previously for direct I420 buffer; removed in favor of structured AndroidYuv420Frame
+
 #[no_mangle]
-pub extern "system" fn Java_ffi_FFI_onCameraFrameUpdate(
-    env: JNIEnv,
+pub extern "system" fn Java_ffi_FFI_onCameraYuvFrame(
+    mut env: JNIEnv,
     _class: JClass,
-    buffer: JObject,
-) {
-    let jb = JByteBuffer::from(buffer);
-    if let Ok(data) = env.get_direct_buffer_address(&jb) {
-        if let Ok(len) = env.get_direct_buffer_capacity(&jb) {
-            CAMERA_RAW.lock().unwrap().update(data, len);
+    frame: JObject,
+)
+{
+    // Basic sanity/logging (throttled)
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static FRAME_COUNT: AtomicUsize = AtomicUsize::new(0);
+    // Parse fields from ffi.AndroidYuv420Frame
+    // Signature: (width:I, height:I, y:ByteBuffer, u:ByteBuffer, v:ByteBuffer,
+    //             yRowStride:I, uRowStride:I, vRowStride:I, uPixelStride:I, vPixelStride:I, tsNanos:J)
+    // Prefer calling Kotlin getters to avoid private-field access and R8 renaming issues
+    let w = match env
+        .call_method(&frame, "getWidth", "()I", &[])
+        .and_then(|v| v.i())
+    {
+        Ok(v) => v as usize,
+        Err(_) => return,
+    };
+    let h = match env
+        .call_method(&frame, "getHeight", "()I", &[])
+        .and_then(|v| v.i())
+    {
+        Ok(v) => v as usize,
+        Err(_) => return,
+    };
+    let y_obj = match env
+        .call_method(&frame, "getY", "()Ljava/nio/ByteBuffer;", &[])
+        .and_then(|v| v.l())
+    {
+        Ok(o) => o,
+        Err(_) => return,
+    };
+    let u_obj = match env
+        .call_method(&frame, "getU", "()Ljava/nio/ByteBuffer;", &[])
+        .and_then(|v| v.l())
+    {
+        Ok(o) => o,
+        Err(_) => return,
+    };
+    let v_obj = match env
+        .call_method(&frame, "getV", "()Ljava/nio/ByteBuffer;", &[])
+        .and_then(|v| v.l())
+    {
+        Ok(o) => o,
+        Err(_) => return,
+    };
+    let y_bb = JByteBuffer::from(y_obj);
+    let u_bb = JByteBuffer::from(u_obj);
+    let v_bb = JByteBuffer::from(v_obj);
+    let y_row = match env.call_method(&frame, "getYRowStride", "()I", &[]).and_then(|v| v.i()) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let u_row = match env.call_method(&frame, "getURowStride", "()I", &[]).and_then(|v| v.i()) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let v_row = match env.call_method(&frame, "getVRowStride", "()I", &[]).and_then(|v| v.i()) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let u_pix = match env.call_method(&frame, "getUPixelStride", "()I", &[]).and_then(|v| v.i()) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let v_pix = match env.call_method(&frame, "getVPixelStride", "()I", &[]).and_then(|v| v.i()) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let _ts = env
+        .call_method(&frame, "getTsNanos", "()J", &[])
+        .and_then(|v| v.j())
+        .unwrap_or(0);
+
+    // Get direct addresses
+    let (src_y, src_u, src_v) = match (
+        env.get_direct_buffer_address(&y_bb),
+        env.get_direct_buffer_address(&u_bb),
+        env.get_direct_buffer_address(&v_bb),
+    ) {
+        (Ok(y), Ok(u), Ok(v)) => (y as *const u8, u as *const u8, v as *const u8),
+        (ry, ru, rv) => {
+            log::error!(
+                "onCameraYuvFrame: get_direct_buffer_address failed: y={:?} u={:?} v={:?}",
+                ry.err(), ru.err(), rv.err()
+            );
+            return;
         }
+    };
+
+    // Prepare owned I420 buffer
+    let y_stride = w as i32; // compact I420
+    let uv_stride = (w as i32) / 2;
+    let dst_len = w * h * 3 / 2;
+    let mut owned = CAMERA_RAW_OWNED.lock().unwrap();
+    if owned.len() != dst_len { owned.resize(dst_len, 0); }
+    let (dst_y_ptr, dst_u_ptr, dst_v_ptr) = unsafe {
+        let base = owned.as_mut_ptr();
+        let y = base;
+        let u = base.add(w * h);
+        let v = u.add((w/2) * (h/2));
+        (y, u, v)
+    };
+
+    // Use libyuv Android420ToI420 to normalize strides/pixelStride into compact I420
+    if u_pix != v_pix {
+        log::warn!(
+            "AndroidYuv420Frame: uPixelStride({}) != vPixelStride({}), proceeding with uPixelStride",
+            u_pix,
+            v_pix
+        );
     }
+
+    if let Err(e) = crate::android420_to_i420(
+        src_y,
+        y_row,
+        src_u,
+        u_row,
+        src_v,
+        v_row,
+        u_pix, // assume U/V pixel stride identical; U stride provided
+        dst_y_ptr,
+        y_stride,
+        dst_u_ptr,
+        uv_stride,
+        dst_v_ptr,
+        uv_stride,
+        w as i32,
+        h as i32,
+    ) {
+        log::error!("Android420ToI420 failed: {:?}", e);
+        return;
+    }
+
+    // Publish to CAMERA_RAW as latest frame
+    let n = FRAME_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    if n % 30 == 1 {
+        log::debug!(
+            "onCameraYuvFrame ok: {}x{}, yRow={}, uRow={}, vRow={}, uPix={}, vPix={}, len={}",
+            w, h, y_row, u_row, v_row, u_pix, v_pix, owned.len()
+        );
+    }
+
+    CAMERA_RAW
+        .lock()
+        .unwrap()
+        .update(owned.as_mut_ptr(), owned.len());
 }
 
 #[no_mangle]

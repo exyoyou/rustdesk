@@ -13,6 +13,45 @@ use hbb_common::{bail, log, ResultType};
 
 generate_call_macro!(call_yuv, false);
 
+#[cfg(target_os = "android")]
+pub fn android420_to_i420(
+    src_y: *const u8,
+    src_stride_y: i32,
+    src_u: *const u8,
+    src_stride_u: i32,
+    src_v: *const u8,
+    src_stride_v: i32,
+    src_pixel_stride_uv: i32,
+    dst_y: *mut u8,
+    dst_stride_y: i32,
+    dst_u: *mut u8,
+    dst_stride_u: i32,
+    dst_v: *mut u8,
+    dst_stride_v: i32,
+    width: i32,
+    height: i32,
+) -> hbb_common::ResultType<()> {
+    // Safety: pointers and strides are provided by JNI from direct buffers; libyuv validates args.
+    call_yuv!(Android420ToI420(
+        src_y,
+        src_stride_y,
+        src_u,
+        src_stride_u,
+        src_v,
+        src_stride_v,
+        src_pixel_stride_uv,
+        dst_y,
+        dst_stride_y,
+        dst_u,
+        dst_stride_u,
+        dst_v,
+        dst_stride_v,
+        width,
+        height,
+    ));
+    Ok(())
+}
+
 #[cfg(not(target_os = "ios"))]
 pub fn convert_to_yuv(
     captured: &PixelBuffer,
@@ -144,6 +183,48 @@ pub fn convert_to_yuv(
                     di += 2;
                 }
             }
+        }
+        // I420 source to I444 destination
+        (crate::Pixfmt::I420, crate::Pixfmt::I444) => {
+            let dst_stride_y = dst_fmt.stride[0];
+            let dst_stride_u = dst_fmt.stride[1];
+            let dst_stride_v = dst_fmt.stride[2];
+            dst.resize(
+                align(dst_fmt.h)
+                    * (align(dst_stride_y) + align(dst_stride_u) + align(dst_stride_v)),
+                0,
+            );
+
+            let w = src_width;
+            let h = src_height;
+            let cw = w / 2;
+            let ch = h / 2;
+
+            // Source compact I420 planes
+            let src_y = &src[..w * h];
+            let src_u = &src[w * h..w * h + cw * ch];
+            let src_v = &src[w * h + cw * ch..w * h + cw * ch * 2];
+
+            let dst_y = dst.as_mut_ptr();
+            let dst_u = dst[dst_fmt.u..].as_mut_ptr();
+            let dst_v = dst[dst_fmt.v..].as_mut_ptr();
+
+            call_yuv!(I420ToI444(
+                src_y.as_ptr(),
+                w as _,
+                src_u.as_ptr(),
+                cw as _,
+                src_v.as_ptr(),
+                cw as _,
+                dst_y,
+                dst_stride_y as _,
+                dst_u,
+                dst_stride_u as _,
+                dst_v,
+                dst_stride_v as _,
+                w as _,
+                h as _,
+            ));
         }
         (crate::Pixfmt::BGRA, crate::Pixfmt::I420)
         | (crate::Pixfmt::RGBA, crate::Pixfmt::I420)
