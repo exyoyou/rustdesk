@@ -52,7 +52,7 @@
             "flutterMode": "debug", // 或 "profile", "release"
             "program": "flutter/lib/main.dart",
             "preLaunchTask": "build-rust-optional-android-arm64",
-            "deviceId": "1C161FDEE009H6",
+            "deviceId": "adb-1C161FDEE009H6-4O2Vi1._adb-tls-connect._tcp",
         },
         {
             "type": "lldb",

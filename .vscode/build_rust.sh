@@ -25,6 +25,7 @@ trap 'on_error ${LINENO} $?' ERR
 SHOULD_BUILD_RUST="$1"
 PLATFORM="$2"
 ANDROID_TARGET="$3"
+
 echo "编译 $SHOULD_BUILD_RUST-$PLATFORM-$ANDROID_TARGET"
 
 # 简单的工具检查与辅助函数
@@ -76,7 +77,9 @@ if [ "${SHOULD_BUILD_RUST}" = "true" ]; then
                 cargo ndk --platform 21 --target aarch64-linux-android build --features flutter,hwcodec --verbose
                 echo "[Android aarch64] 构建完成"
                 mkdir -p ./flutter/android/app/src/main/jniLibs/arm64-v8a
+                echo "移动 liblibrustdesk.o.so 到 flutter 项目中..."
                 cp ./target/aarch64-linux-android/debug/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/arm64-v8a/librustdesk.so
+                echo "移动完成"
             ;;
             x86_64)
                 echo "ndk 编译 x64..."
@@ -92,12 +95,16 @@ if [ "${SHOULD_BUILD_RUST}" = "true" ]; then
                 cargo ndk --platform 21 --target x86_64-linux-android build --features flutter --verbose
                 echo "[Android x86_64] 构建完成"
                 mkdir -p ./flutter/android/app/src/main/jniLibs/x86_64
+                echo "移动 liblibrustdesk.o.so 到 flutter 项目中..."
                 cp ./target/x86_64-linux-android/debug/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/x86_64/librustdesk.so
+                echo "移动完成"
             ;;
         esac
 
     elif [ "${PLATFORM}" = "linux" ]; then
+        echo "Linux 平台编译..."
         cargo build --features flutter
+        echo "Linux 平台编译完成."
     fi
 else
     echo "Skipping Rust compilation for ${PLATFORM}."
