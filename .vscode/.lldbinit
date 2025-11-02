@@ -35,8 +35,8 @@ settings set target.process.thread.step-avoid-regexp '^(std::|__cxa_|android\\.|
 # Android系统断点自动继续 - 激活以避免系统中断
 breakpoint set -r '@android\\..*' --auto-continue true
 breakpoint set -r '@java\\..*' --auto-continue true
-breakpoint set -n "__jit_debug_register_code" --auto-continue true
-breakpoint set -r '__jit_debug.*' --auto-continue true
+; breakpoint set -n "@__jit_debug_register_code" --auto-continue true
+breakpoint set -r '@__jit_debug.*' --auto-continue true
 
 # 优化调试体验 - 减少开销
 settings set target.inline-breakpoint-strategy never
