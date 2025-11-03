@@ -579,24 +579,24 @@ class _PermissionCheckerState extends State<PermissionChecker> {
     return PaddingCard(
         title: translate("Permissions"),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          serverModel.mediaOk
-              ? ElevatedButton.icon(
-                      style: ButtonStyle(
-                          backgroundColor:
-                              MaterialStateProperty.all(Colors.red)),
-                      icon: const Icon(Icons.stop),
-                      onPressed: serverModel.toggleService,
-                      label: Text(translate("Stop service")))
-                  .marginOnly(bottom: 8)
-              : SizedBox.shrink(),
-          PermissionRow(
-              translate("Screen Capture"),
-              serverModel.mediaOk,
-              !serverModel.mediaOk &&
-                      gFFI.userModel.userName.value.isEmpty &&
-                      bind.mainGetLocalOption(key: "show-scam-warning") != "N"
-                  ? () => showScamWarning(context, serverModel)
-                  : serverModel.toggleService),
+      serverModel.isStart
+        ? ElevatedButton.icon(
+            style: ButtonStyle(
+              backgroundColor:
+                MaterialStateProperty.all(Colors.red)),
+            icon: const Icon(Icons.stop),
+            onPressed: serverModel.toggleService,
+            label: Text(translate("Stop service")))
+          .marginOnly(bottom: 8)
+        : SizedBox.shrink(),
+      PermissionRow(
+        translate("Screen Capture"),
+        serverModel.mediaOk,
+        !serverModel.mediaOk &&
+            gFFI.userModel.userName.value.isEmpty &&
+            bind.mainGetLocalOption(key: "show-scam-warning") != "N"
+          ? () => showScamWarning(context, serverModel)
+          : serverModel.toggleMedia),
           PermissionRow(translate("Input Control"), serverModel.inputOk,
               serverModel.toggleInput),
           PermissionRow(translate("Transfer file"), serverModel.fileOk,
@@ -890,7 +890,8 @@ void androidChannelInit() {
           }
         case "on_media_projection_canceled":
           {
-            gFFI.serverModel.stopService();
+            // 权限被取消或系统停止了投屏：只更新录屏状态为关闭，不影响 main server
+            gFFI.serverModel.changeStatue("media", false);
             break;
           }
         case "msgbox":

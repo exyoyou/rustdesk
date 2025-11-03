@@ -376,7 +376,7 @@ class FloatingWindowService : Service(), View.OnTouchListener {
 
     private fun updateKeepScreenOnLayoutParams(): Boolean {
         val oldOn = layoutParams.flags and FLAG_KEEP_SCREEN_ON != 0
-        val newOn = keepScreenOn == KeepScreenOn.SERVICE_ON ||  (keepScreenOn == KeepScreenOn.DURING_CONTROLLED  &&  MainService.isStart)
+        val newOn = keepScreenOn == KeepScreenOn.SERVICE_ON ||  (keepScreenOn == KeepScreenOn.DURING_CONTROLLED  &&  MainService.isCapture)
         if (oldOn != newOn) {
             Log.d(logTag, "change keep screen on to $newOn")
             if (newOn) {
