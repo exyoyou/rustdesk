@@ -42,13 +42,11 @@ import android.view.Surface.FRAME_RATE_COMPATIBILITY_DEFAULT
 import android.view.WindowManager
 import androidx.annotation.Keep
 import androidx.annotation.RequiresApi
-import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
 import org.json.JSONArray
 import java.util.concurrent.Executors
-import kotlin.concurrent.thread
 import org.json.JSONException
 import org.json.JSONObject
 import kotlin.math.max
@@ -112,7 +110,7 @@ class MainService : Service() {
                 }.toString()
             }
             "is_start" -> {
-                isStart.toString()
+                isCapture.toString()
             }
             else -> ""
         }
@@ -135,7 +133,7 @@ class MainService : Service() {
                         translate("Share screen")
                     }
                     if (authorized) {
-                        if (!isFileTransfer && !isStart) {
+                        if (!isFileTransfer && !isCapture) {
                             startCapture()
                         }
                         onClientAuthorizedNotification(id, type, username, peerId)
@@ -221,13 +219,13 @@ class MainService : Service() {
     private val wakeLock: PowerManager.WakeLock by lazy { powerManager.newWakeLock(PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.SCREEN_BRIGHT_WAKE_LOCK, "rustdesk:wakelock")}
 
     companion object {
-        private var _isReady = false // media permission ready status
-        private var _isStart = false // screen capture start status
+        private var _isMainServer = false // media permission ready status
+        private var _isCapture = false // screen capture start status
         private var _isAudioStart = false // audio capture start status
-        val isReady: Boolean
-            get() = _isReady
-        val isStart: Boolean
-            get() = _isStart
+        val isMainServer: Boolean
+            get() = _isMainServer
+        val isCapture: Boolean
+            get() = _isCapture
         val isAudioStart: Boolean
             get() = _isAudioStart
     }
@@ -240,6 +238,7 @@ class MainService : Service() {
 
     // video
     private var mediaProjection: MediaProjection? = null
+    private var mediaProjectionCallback: MediaProjection.Callback? = null
     private var surface: Surface? = null
     private val sendVP9Thread = Executors.newSingleThreadExecutor()
     private var videoEncoder: MediaCodec? = null
@@ -259,7 +258,7 @@ class MainService : Service() {
     private var lastCameraStartAtMs: Long = 0L
 
     // audio
-    private val audioRecordHandle = AudioRecordHandle(this, { isStart }, { isAudioStart })
+    private val audioRecordHandle = AudioRecordHandle(this, { isCapture }, { isAudioStart })
 
     // notification
     private lateinit var notificationManager: NotificationManager
@@ -336,7 +335,7 @@ class MainService : Service() {
                 SCREEN_INFO.height = h
                 SCREEN_INFO.scale = scale
                 SCREEN_INFO.dpi = dpi
-                if (isStart) {
+                if (isCapture) {
                     stopCapture()
                     FFI.refreshScreen()
                     startCapture()
@@ -377,12 +376,27 @@ class MainService : Service() {
             intent.getParcelableExtra<Intent>(EXT_MEDIA_PROJECTION_RES_INTENT)?.let {
                 mediaProjection =
                     mediaProjectionManager.getMediaProjection(Activity.RESULT_OK, it)
+                // Watch for system stop of MediaProjection to keep Flutter state consistent
+                val callback = object : MediaProjection.Callback() {
+                    override fun onStop() {
+                        Log.d(logTag, "MediaProjection onStop: system stopped capture")
+                        stopCapture()
+                    }
+                }
+                mediaProjectionCallback = callback
+                mediaProjection?.registerCallback(callback, serviceHandler)
                 checkMediaPermission()
-                _isReady = true
+                // Do NOT mark main server started here; capture can run independently
+                // Start capture immediately after permission is granted
+                startCapture()
             } ?: let {
                 Log.d(logTag, "getParcelableExtra intent null, invoke requestMediaProjection")
                 requestMediaProjection()
             }
+        } else if (intent?.action == ACT_START_SERVICE_ONLY) {
+            createForegroundNotification()
+            _isMainServer = true
+            checkMediaPermission()
         }
         return START_NOT_STICKY // don't use sticky (auto restart), the new service (from auto restart) will lose control
     }
@@ -418,7 +432,7 @@ class MainService : Service() {
                         try {
                             // If not call acquireLatestImage, listener will not be called again
                             imageReader.acquireLatestImage().use { image ->
-                                if (image == null || !isStart) return@setOnImageAvailableListener
+                                if (image == null || !isCapture) return@setOnImageAvailableListener
                                 val planes = image.planes
                                 val buffer = planes[0].buffer
                                 buffer.rewind()
@@ -442,7 +456,7 @@ class MainService : Service() {
     }
 
     fun startCapture(): Boolean {
-        if (isStart) {
+        if (isCapture) {
             return true
         }
         if (mediaProjection == null) {
@@ -469,27 +483,33 @@ class MainService : Service() {
             }
         }
         checkMediaPermission()
-        _isStart = true
+        _isCapture = true
         FFI.setFrameRawEnable("video",true)
-        MainActivity.rdClipboardManager?.setCaptureStarted(_isStart)
+        MainActivity.rdClipboardManager?.setCaptureStarted(_isCapture)
         return true
+    }
+
+    fun stopMainServerOnly() {
+        _isMainServer = false
+        checkMediaPermission()
     }
 
     @Synchronized
     fun stopCapture() {
+        // Idempotent guard: if nothing to stop, just emit current state
+        if (!_isCapture && mediaProjection == null && virtualDisplay == null && imageReader == null && videoEncoder == null) {
+            checkMediaPermission()
+            return
+        }
         Log.d(logTag, "Stop Capture")
         FFI.setFrameRawEnable("video",false)
-        _isStart = false
-        MainActivity.rdClipboardManager?.setCaptureStarted(_isStart)
+        _isCapture = false
+        MainActivity.rdClipboardManager?.setCaptureStarted(_isCapture)
         // release video
-        if (reuseVirtualDisplay) {
-            // The virtual display video projection can be paused by calling `setSurface(null)`.
-            // https://developer.android.com/reference/android/hardware/display/VirtualDisplay.Callback
-            // https://learn.microsoft.com/en-us/dotnet/api/android.hardware.display.virtualdisplay.callback.onpaused?view=net-android-34.0
-            virtualDisplay?.setSurface(null)
-        } else {
+        try {
             virtualDisplay?.release()
-        }
+        } catch (_: Exception) {}
+        virtualDisplay = null
         // suface needs to be release after `imageReader.close()` to imageReader access released surface
         // https://github.com/rustdesk/rustdesk/issues/4118#issuecomment-1515666629
         imageReader?.close()
@@ -499,9 +519,6 @@ class MainService : Service() {
             it.stop()
             it.release()
         }
-        if (!reuseVirtualDisplay) {
-            virtualDisplay = null
-        }
         videoEncoder = null
         // suface needs to be release after `imageReader.close()` to imageReader access released surface
         // https://github.com/rustdesk/rustdesk/issues/4118#issuecomment-1515666629
@@ -510,11 +527,24 @@ class MainService : Service() {
         // release audio
         _isAudioStart = false
         audioRecordHandle.tryReleaseAudio()
+        // stop MediaProjection to close system recording UI
+        try {
+            mediaProjectionCallback?.let { cb ->
+                mediaProjection?.unregisterCallback(cb)
+            }
+        } catch (_: Exception) {}
+        mediaProjectionCallback = null
+        try {
+            mediaProjection?.stop()
+        } catch (_: Exception) {}
+        mediaProjection = null
+        // notify flutter about capture state change
+        checkMediaPermission()
     }
 
     fun destroy() {
         Log.d(logTag, "destroy service")
-        _isReady = false
+        _isMainServer = false
         _isAudioStart = false
 
         stopCapture()
@@ -532,10 +562,17 @@ class MainService : Service() {
     }
 
     fun checkMediaPermission(): Boolean {
+        // Report capture status as `media`, and server status as `server`
         Handler(Looper.getMainLooper()).post {
             MainActivity.flutterMethodChannel?.invokeMethod(
                 "on_state_changed",
-                mapOf("name" to "media", "value" to isReady.toString())
+                mapOf("name" to "media", "value" to isCapture.toString())
+            )
+        }
+        Handler(Looper.getMainLooper()).post {
+            MainActivity.flutterMethodChannel?.invokeMethod(
+                "on_state_changed",
+                mapOf("name" to "server", "value" to isMainServer.toString())
             )
         }
         Handler(Looper.getMainLooper()).post {
@@ -544,7 +581,7 @@ class MainService : Service() {
                 mapOf("name" to "input", "value" to InputService.isOpen.toString())
             )
         }
-        return isReady
+        return isCapture
     }
 
     private fun startRawVideoRecorder(mp: MediaProjection) {

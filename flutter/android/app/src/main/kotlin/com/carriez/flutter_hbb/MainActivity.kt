@@ -23,9 +23,6 @@ import android.media.MediaCodecInfo
 import android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
 import android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar
 import android.media.MediaCodecList
-import android.media.MediaFormat
-import android.util.DisplayMetrics
-import androidx.annotation.RequiresApi
 import org.json.JSONArray
 import org.json.JSONObject
 import com.hjq.permissions.XXPermissions
@@ -49,10 +46,11 @@ class MainActivity : FlutterActivity() {
 
     private var isAudioStart = false
     private val audioRecordHandle = AudioRecordHandle(this, { false }, { isAudioStart })
+    private var pendingStopCapture = false
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        if (MainService.isReady) {
+        if (MainService.isMainServer) {
             Intent(activity, MainService::class.java).also {
                 bindService(it, serviceConnection, Context.BIND_AUTO_CREATE)
             }
@@ -82,7 +80,7 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun requestMediaProjection() {
+    private fun requestMediaProjectionForCapture() {
         val intent = Intent(this, PermissionRequestTransparentActivity::class.java).apply {
             action = ACT_REQUEST_MEDIA_PROJECTION
         }
@@ -91,8 +89,13 @@ class MainActivity : FlutterActivity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == REQ_INVOKE_PERMISSION_ACTIVITY_MEDIA_PROJECTION && resultCode == RES_FAILED) {
-            flutterMethodChannel?.invokeMethod("on_media_projection_canceled", null)
+        if (requestCode == REQ_INVOKE_PERMISSION_ACTIVITY_MEDIA_PROJECTION) {
+            if (resultCode == RES_FAILED) {
+                flutterMethodChannel?.invokeMethod("on_media_projection_canceled", null)
+            } else {
+                // Permission granted, try start capture now
+                mainService?.startCapture()
+            }
         }
     }
 
@@ -117,6 +120,10 @@ class MainActivity : FlutterActivity() {
             Log.d(logTag, "onServiceConnected")
             val binder = service as MainService.LocalBinder
             mainService = binder.getService()
+            if (pendingStopCapture) {
+                mainService?.stopCapture()
+                pendingStopCapture = false
+            }
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -130,30 +137,60 @@ class MainActivity : FlutterActivity() {
             // make sure result will be invoked, otherwise flutter will await forever
             when (call.method) {
                 "init_service" -> {
+                    // Start/bind service only, do not request MediaProjection here
                     Intent(activity, MainService::class.java).also {
+                        it.action = ACT_START_SERVICE_ONLY
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            startForegroundService(it)
+                        } else {
+                            startService(it)
+                        }
                         bindService(it, serviceConnection, Context.BIND_AUTO_CREATE)
                     }
-                    if (MainService.isReady) {
-                        result.success(false)
-                        return@setMethodCallHandler
-                    }
-                    requestMediaProjection()
                     result.success(true)
                 }
                 "start_capture" -> {
                     mainService?.let {
-                        result.success(it.startCapture())
-                    } ?: let {
-                        result.success(false)
+                        val ok = it.startCapture()
+                        if (!ok) {
+                            requestMediaProjectionForCapture()
+                        }
+                        result.success(ok)
+                    } ?: run {
+                        // Service not bound yet: bind and request permission; service will start capture after grant
+                        Intent(activity, MainService::class.java).also {
+                            bindService(it, serviceConnection, Context.BIND_AUTO_CREATE)
+                        }
+                        requestMediaProjectionForCapture()
+                        result.success(true)
                     }
                 }
                 "stop_service" -> {
                     Log.d(logTag, "Stop service")
                     mainService?.let {
-                        it.destroy()
-                        result.success(true)
-                    } ?: let {
+                        if (MainService.isCapture) {
+                            // Only stop main server part, keep capture running
+                            it.stopMainServerOnly()
+                            result.success(true)
+                        } else {
+                            it.destroy()
+                            result.success(true)
+                        }
+                    } ?: run {
                         result.success(false)
+                    }
+                }
+                "stop_capture" -> {
+                    mainService?.let {
+                        it.stopCapture()
+                        result.success(true)
+                    } ?: run {
+                        // Bind service then stop when connected
+                        pendingStopCapture = true
+                        Intent(activity, MainService::class.java).also {
+                            bindService(it, serviceConnection, Context.BIND_AUTO_CREATE)
+                        }
+                        result.success(true)
                     }
                 }
                 "check_permission" -> {
@@ -193,7 +230,11 @@ class MainActivity : FlutterActivity() {
                     )
                     Companion.flutterMethodChannel?.invokeMethod(
                         "on_state_changed",
-                        mapOf("name" to "media", "value" to MainService.isReady.toString())
+                        mapOf("name" to "server", "value" to MainService.isMainServer.toString())
+                    )
+                    Companion.flutterMethodChannel?.invokeMethod(
+                        "on_state_changed",
+                        mapOf("name" to "media", "value" to MainService.isCapture.toString())
                     )
                     result.success(true)
                 }
@@ -402,7 +443,7 @@ class MainActivity : FlutterActivity() {
     override fun onStop() {
         super.onStop()
         val disableFloatingWindow = FFI.getLocalOption("disable-floating-window") == "Y"
-        if (!disableFloatingWindow && MainService.isReady) {
+        if (!disableFloatingWindow && MainService.isMainServer) {
             startService(Intent(this, FloatingWindowService::class.java))
         }
     }
