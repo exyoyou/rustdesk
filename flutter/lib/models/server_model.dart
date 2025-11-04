@@ -512,6 +512,15 @@ class ServerModel with ChangeNotifier {
       case "server":
         // 原生上报 MainService 是否运行
         _isStart = value;
+        // 若用户预置了录屏且当前未录屏，则在服务启动后尝试一次在前台会自动弹权限）
+        if (isAndroid && _isStart && !_mediaOk) {
+          Future.microtask(() async {
+            final preset = await parent.target?.invokeMethod("get_capture_preset");
+            if (preset == true) {
+              await parent.target?.invokeMethod("start_capture");
+            }
+          });
+        }
         break;
       case "input":
         if (_inputOk != value) {
@@ -854,10 +863,14 @@ class ServerModel with ChangeNotifier {
       // stop capture
       await parent.target?.invokeMethod("stop_capture");
       // 状态由原生回调 on_state_changed(name: "media") 驱动
+      // persist preset = false
+      await parent.target?.invokeMethod("set_capture_preset", false);
     } else {
       // start capture
       // 无论服务是否运行，都请求开启录屏（原生负责权限与可能的服务启动，仅用于录屏）
       await parent.target?.invokeMethod("start_capture");
+      // persist preset = true
+      await parent.target?.invokeMethod("set_capture_preset", true);
     }
     // 客户端状态可能变化，尝试刷新
     updateClientState();

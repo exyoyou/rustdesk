@@ -286,6 +286,21 @@ class MainActivity : FlutterActivity() {
                         result.success(false)
                     }
                 }
+                GET_CAPTURE_PRESET -> {
+                    val prefs = getSharedPreferences(KEY_SHARED_PREFERENCES, MODE_PRIVATE)
+                    result.success(prefs.getBoolean(KEY_CAPTURE_PRESET, false))
+                }
+                SET_CAPTURE_PRESET -> {
+                    if (call.arguments is Boolean) {
+                        val prefs = getSharedPreferences(KEY_SHARED_PREFERENCES, MODE_PRIVATE)
+                        val edit = prefs.edit()
+                        edit.putBoolean(KEY_CAPTURE_PRESET, call.arguments as Boolean)
+                        edit.apply()
+                        result.success(true)
+                    } else {
+                        result.success(false)
+                    }
+                }
                 SYNC_APP_DIR_CONFIG_PATH -> {
                     if (call.arguments is String) {
                         val prefs = getSharedPreferences(KEY_SHARED_PREFERENCES, MODE_PRIVATE)
