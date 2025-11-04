@@ -130,22 +130,30 @@ class MainService : Service() {
                     val peerId = jsonObject["peer_id"] as String
                     val authorized = jsonObject["authorized"] as Boolean
                     val isFileTransfer = jsonObject["is_file_transfer"] as Boolean
-                    val type = if (isFileTransfer) {
-                        translate("Transfer file")
-                    } else {
-                        translate("Share screen")
+                    val isViewCamera = jsonObject["is_view_camera"] as Boolean
+                    val isTerminal = jsonObject["is_view_camera"] as Boolean
+                    var isCaptureModel = true
+                    var type = translate("Share screen")
+                    if (isFileTransfer) {
+                        type = translate("Transfer file")
+                        isCaptureModel =false
+                    } else if (isViewCamera) {
+                        type = translate("View camera")
+                        isCaptureModel =false
+                    } else if (isTerminal) {
+                        type = translate("Terminal")
+                        isCaptureModel =false
                     }
                     if (authorized) {
-                        if (!isFileTransfer) {
+                        if (isCaptureModel) {
                             // 仅在当前已在采集时才执行“清理并重启”，避免非录屏场景（如仅使用摄像头）误触发录屏
-                            if (isCapture) {
-                                // 保留 MediaProjection 权限（不弹二次授权）
-                                stopCapture(false)
-                                val ok = startCapture()
-                                if (!ok) {
-                                    requestMediaProjection()
-                                }
+                            // 保留 MediaProjection 权限（不弹二次授权）
+                            stopCapture(false)
+                            val ok = startCapture()
+                            if (!ok) {
+                                requestMediaProjection()
                             }
+
                         }
                         onClientAuthorizedNotification(id, type, username, peerId)
                     } else {
