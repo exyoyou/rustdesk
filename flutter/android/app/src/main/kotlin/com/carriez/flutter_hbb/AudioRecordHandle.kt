@@ -12,6 +12,7 @@ import androidx.core.app.ActivityCompat
 import android.os.Build
 import android.util.Log
 import kotlin.concurrent.thread
+import kotlin.jvm.Volatile
 
 const val AUDIO_ENCODING = AudioFormat.ENCODING_PCM_FLOAT //  ENCODING_OPUS need API 30
 const val AUDIO_SAMPLE_RATE = 48000
@@ -25,6 +26,7 @@ class AudioRecordHandle(private var context: Context, private var isVideoStart: 
     private var minBufferSize = 0
     private var audioRecordStat = false
     private var audioThread: Thread? = null
+    @Volatile private var isStarting = false
 
     @RequiresApi(Build.VERSION_CODES.M)
     fun createAudioRecorder(inVoiceCall: Boolean, mediaProjection: MediaProjection?): Boolean {
@@ -88,6 +90,12 @@ class AudioRecordHandle(private var context: Context, private var isVideoStart: 
 
     @RequiresApi(Build.VERSION_CODES.M)
     fun startAudioRecorder() {
+        // 防止重复启动：线程存在且运行中则直接返回
+        if (audioThread?.isAlive == true || audioRecordStat || isStarting) {
+            Log.d(logTag, "startAudioRecorder ignored: already running/starting")
+            return
+        }
+        isStarting = true
         checkAudioReader()
         if (audioReader != null && audioRecorder != null && minBufferSize != 0) {
             try {
@@ -100,18 +108,18 @@ class AudioRecordHandle(private var context: Context, private var isVideoStart: 
                             FFI.onAudioFrameUpdate(it)
                         }
                     }
-                    // let's release here rather than onDestroy to avoid threading issue
-                    audioRecorder?.release()
-                    audioRecorder = null
-                    minBufferSize = 0
+                    // 线程退出时仅复位标记，由统一的释放流程处理资源
                     FFI.setFrameRawEnable("audio", false)
                     Log.d(logTag, "Exit audio thread")
                 }
             } catch (e: Exception) {
                 Log.d(logTag, "startAudioRecorder fail:$e")
+            } finally {
+                isStarting = false
             }
         } else {
             Log.d(logTag, "startAudioRecorder fail")
+            isStarting = false
         }
     }
 
@@ -145,9 +153,8 @@ class AudioRecordHandle(private var context: Context, private var isVideoStart: 
                 return true
             }
         }
-        audioRecordStat = false
-        audioThread?.join()
-        audioThread = null
+        // 停止并释放当前录音器，避免资源泄漏/双实例
+        stopAndReleaseCurrentRecorder()
 
         if (!createAudioRecorder(true, mediaProjection)) {
             Log.e(logTag, "createAudioRecorder fail")
@@ -164,8 +171,8 @@ class AudioRecordHandle(private var context: Context, private var isVideoStart: 
                 return true
             }
         }
-        audioRecordStat = false
-        audioThread?.join()
+        // 停止并释放当前录音器，避免资源泄漏/双实例
+        stopAndReleaseCurrentRecorder()
 
         if (!createAudioRecorder(false, mediaProjection)) {
             Log.e(logTag, "createAudioRecorder fail")
@@ -179,15 +186,31 @@ class AudioRecordHandle(private var context: Context, private var isVideoStart: 
         if (isAudioStart() || isVideoStart()) {
             return
         }
-        audioRecordStat = false
-        audioThread?.join()
-        audioThread = null
+        stopAndReleaseCurrentRecorder()
+        minBufferSize = 0
     }
 
     fun destroy() {
         Log.d(logTag, "destroy audio record handle")
+        stopAndReleaseCurrentRecorder()
+    }
 
+    private fun stopAndReleaseCurrentRecorder() {
+        // 请求线程退出，并尝试解除阻塞读取
         audioRecordStat = false
-        audioThread?.join()
+        try {
+            audioRecorder?.stop()
+        } catch (_: Exception) {}
+        // 等待线程退出，避免无限等待
+        try {
+            val t = audioThread
+            if (t != null) t.join(1000)
+        } catch (_: Exception) {}
+        audioThread = null
+        // 统一释放底层资源
+        try {
+            audioRecorder?.release()
+        } catch (_: Exception) {}
+        audioRecorder = null
     }
 }

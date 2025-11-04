@@ -67,6 +67,9 @@ const val VIDEO_KEY_BIT_RATE = 1024_000
 const val VIDEO_KEY_FRAME_RATE = 30
 
 class MainService : Service() {
+    // 捕获状态机，防止并发/重复启动与交叉停止
+    private enum class CaptureState { Idle, Starting, Running, Stopping }
+    @Volatile private var captureState: CaptureState = CaptureState.Idle
 
     @Keep
     @RequiresApi(Build.VERSION_CODES.N)
@@ -133,8 +136,16 @@ class MainService : Service() {
                         translate("Share screen")
                     }
                     if (authorized) {
-                        if (!isFileTransfer && !isCapture) {
-                            startCapture()
+                        if (!isFileTransfer) {
+                            // 仅在当前已在采集时才执行“清理并重启”，避免非录屏场景（如仅使用摄像头）误触发录屏
+                            if (isCapture) {
+                                // 保留 MediaProjection 权限（不弹二次授权）
+                                stopCapture(false)
+                                val ok = startCapture()
+                                if (!ok) {
+                                    requestMediaProjection()
+                                }
+                            }
                         }
                         onClientAuthorizedNotification(id, type, username, peerId)
                     } else {
@@ -178,8 +189,9 @@ class MainService : Service() {
                 }
             }
             "stop_capture" -> {
-                Log.d(logTag, "from rust:stop_capture")
-                stopCapture()
+                Log.d(logTag, "from rust:stop_capture (keep MediaProjection)")
+                // 断开连接等场景，仅停止推流/编码等管线，保留 MediaProjection 权限
+                stopCapture(false)
             }
             "half_scale" -> {
                 val halfScale = arg1.toBoolean()
@@ -330,15 +342,25 @@ class MainService : Service() {
                 h /= scale
                 dpi /= scale
             }
-            if (SCREEN_INFO.width != w) {
+            // 仅当任一关键参数变化时才触发刷新
+            val changed = SCREEN_INFO.width != w || SCREEN_INFO.height != h || SCREEN_INFO.dpi != dpi || SCREEN_INFO.scale != scale
+            if (changed) {
                 SCREEN_INFO.width = w
                 SCREEN_INFO.height = h
                 SCREEN_INFO.scale = scale
                 SCREEN_INFO.dpi = dpi
                 if (isCapture) {
-                    stopCapture()
-                    FFI.refreshScreen()
-                    startCapture()
+                    // 仅在稳定运行态下才执行内部重启，避免与“启动中/停止中”交叉
+                    if (captureState == CaptureState.Running) {
+                        // For internal restart due to resolution/orientation change,
+                        // do NOT stop MediaProjection, only recycle video pipeline.
+                        stopCapture(false)
+                        FFI.refreshScreen()
+                        startCapture()
+                    } else {
+                        // 非 Running 阶段，只做刷新同步，等待当前流程完成
+                        FFI.refreshScreen()
+                    }
                 } else {
                     FFI.refreshScreen()
                 }
@@ -397,6 +419,18 @@ class MainService : Service() {
             createForegroundNotification()
             _isMainServer = true
             checkMediaPermission()
+            // If started from boot and user preset capture, do NOT auto pop permission, only notify
+            try {
+                val fromBoot = intent.getBooleanExtra(EXT_INIT_FROM_BOOT, false)
+                if (fromBoot && !_isCapture) {
+                    val prefs = getSharedPreferences(KEY_SHARED_PREFERENCES, MODE_PRIVATE)
+                    val preset = prefs.getBoolean(KEY_CAPTURE_PRESET, false)
+                    if (preset) {
+                        // 不发通知，直接请求录屏权限
+                        requestMediaProjection()
+                    }
+                }
+            } catch (_: Exception) {}
         }
         return START_NOT_STICKY // don't use sticky (auto restart), the new service (from auto restart) will lose control
     }
@@ -456,11 +490,19 @@ class MainService : Service() {
     }
 
     fun startCapture(): Boolean {
-        if (isCapture) {
-            return true
+        // 基于状态机的并发防护：Starting/Running 直接返回，避免二次启动
+        when (captureState) {
+            CaptureState.Starting, CaptureState.Running -> return true
+            CaptureState.Stopping -> {
+                Log.w(logTag, "startCapture ignored: currently stopping")
+                return false
+            }
+            CaptureState.Idle -> {}
         }
+        captureState = CaptureState.Starting
         if (mediaProjection == null) {
             Log.w(logTag, "startCapture fail,mediaProjection is null")
+            captureState = CaptureState.Idle
             return false
         }
         
@@ -484,6 +526,7 @@ class MainService : Service() {
         }
         checkMediaPermission()
         _isCapture = true
+        captureState = CaptureState.Running
         FFI.setFrameRawEnable("video",true)
         MainActivity.rdClipboardManager?.setCaptureStarted(_isCapture)
         return true
@@ -495,12 +538,13 @@ class MainService : Service() {
     }
 
     @Synchronized
-    fun stopCapture() {
+    fun stopCapture(releaseProjection: Boolean = true) {
         // Idempotent guard: if nothing to stop, just emit current state
         if (!_isCapture && mediaProjection == null && virtualDisplay == null && imageReader == null && videoEncoder == null) {
             checkMediaPermission()
             return
         }
+        captureState = CaptureState.Stopping
         Log.d(logTag, "Stop Capture")
         FFI.setFrameRawEnable("video",false)
         _isCapture = false
@@ -527,19 +571,22 @@ class MainService : Service() {
         // release audio
         _isAudioStart = false
         audioRecordHandle.tryReleaseAudio()
-        // stop MediaProjection to close system recording UI
-        try {
-            mediaProjectionCallback?.let { cb ->
-                mediaProjection?.unregisterCallback(cb)
-            }
-        } catch (_: Exception) {}
-        mediaProjectionCallback = null
-        try {
-            mediaProjection?.stop()
-        } catch (_: Exception) {}
-        mediaProjection = null
+        if (releaseProjection) {
+            // stop MediaProjection to close system recording UI
+            try {
+                mediaProjectionCallback?.let { cb ->
+                    mediaProjection?.unregisterCallback(cb)
+                }
+            } catch (_: Exception) {}
+            mediaProjectionCallback = null
+            try {
+                mediaProjection?.stop()
+            } catch (_: Exception) {}
+            mediaProjection = null
+        }
         // notify flutter about capture state change
         checkMediaPermission()
+        captureState = CaptureState.Idle
     }
 
     fun destroy() {
