@@ -5,10 +5,9 @@ on:
     # schedule build every night
     - cron: "0 0 * * *"
   workflow_dispatch:
-  branches:
-    - debug
 jobs:
   run-flutter-nightly-build:
+    if: github.ref == 'refs/heads/debug'
     uses: ./.github/workflows/flutter-build.yml
     secrets: inherit
     with:
