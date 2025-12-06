@@ -1378,6 +1378,7 @@ impl Connection {
         #[cfg(any(
             target_os = "windows",
             target_os = "linux",
+            target_os = "android",
             all(target_os = "macos", feature = "unix-file-copy-paste")
         ))]
         let mut platform_additions = serde_json::Map::new();
@@ -1426,12 +1427,17 @@ impl Connection {
             platform_additions.insert("has_file_clipboard".into(), json!(has_file_clipboard));
         }
 
-        #[cfg(any(target_os = "windows", target_os = "linux"))]
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "android"))]
         {
             platform_additions.insert("support_view_camera".into(), json!(true));
         }
 
-        #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+        #[cfg(any(
+            target_os = "linux",
+            target_os = "windows",
+            target_os = "macos",
+            target_os = "android",
+        ))]
         if !platform_additions.is_empty() {
             pi.platform_additions = serde_json::to_string(&platform_additions).unwrap_or("".into());
         }
@@ -1521,7 +1527,7 @@ impl Connection {
 
             pi.displays = camera::Cameras::all_info().unwrap_or(Vec::new());
             pi.current_display = camera::PRIMARY_CAMERA_IDX as _;
-            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            #[cfg(not(any(target_os = "ios")))]
             {
                 pi.resolutions = Some(SupportedResolutions {
                     resolutions: camera::Cameras::get_camera_resolution(
@@ -1771,6 +1777,64 @@ impl Connection {
             block_input: self.block_input,
             from_switch: self.from_switch,
         });
+
+        // 新增：摄像头会话授权后，自动开启语音
+        if authorized && self.view_camera {
+            // audio_enabled() 会综合配置/权限；避免在禁音时启动
+            if self.audio_enabled() {
+                self.auto_start_voice_for_camera();
+            }
+        }
+    }
+
+    // 当摄像头会话开始时自动开启麦克风音频（无需用户点“语音通话”）
+    fn auto_start_voice_for_camera(&mut self) {
+        if !self.is_authed_view_camera_conn() {
+            return;
+        }
+        if self.voice_calling {
+            return; // 已经在语音通话中
+        }
+        if !self.audio_enabled() {
+            return; // 对端或本端禁用了音频
+        }
+        // 选择默认麦克风作为输入设备（跨平台已封装）
+        crate::audio_service::set_voice_call_input_device(
+            crate::get_default_sound_input(),
+            false,
+        );
+        // 通知本机 CM：开始语音通话（Android 会据此切换 VOICE_COMMUNICATION 源）
+        self.send_to_cm(Data::StartVoiceCall);
+        // 订阅音频服务，将本连接加入音频发布
+        if let Some(s) = self.server.upgrade() {
+            s.write().unwrap().subscribe(
+                super::audio_service::NAME,
+                self.inner.clone(),
+                true,
+            );
+        }
+        self.voice_calling = true;
+    }
+
+    // 当摄像头会话结束时自动关闭麦克风音频并取消订阅
+    fn auto_stop_voice_for_camera(&mut self) {
+        if !self.voice_calling {
+            return;
+        }
+        // 恢复设备设置、通知 CM 关闭
+        // 注意：已有 close_voice_call() 封装了对应的逻辑，可直接使用
+        // 这里如果在非 async 上下文，可发送一个消息让 async 路径调用 close_voice_call().await
+        self.send_to_cm(Data::CloseVoiceCall("".to_owned()));
+        self.voice_calling = false;
+        if let Some(s) = self.server.upgrade() {
+            s.write().unwrap().subscribe(
+                super::audio_service::NAME,
+                self.inner.clone(),
+                false,
+            );
+        }
+        // 重置输入设备（与 handle_voice_call(false) 行为一致）
+        crate::audio_service::set_voice_call_input_device(None, true);
     }
 
     #[inline]
@@ -3981,7 +4045,14 @@ impl Connection {
         //
         // We can add a (Vec<conn_id>, input device) to avoid this.
         // But it's not necessary now and we have to consider two audio services(client, server).
-        crate::audio_service::set_voice_call_input_device(None, true);
+        // 新增：如果这是摄像头会话且当前处于语音通话，优先按通话关闭流程做完整清理
+        if self.is_authed_view_camera_conn() && self.voice_calling {
+            // 会发送 Data::CloseVoiceCall 给 CM，并取消对 audio_service 的订阅，且重置输入设备
+            self.close_voice_call().await;
+        } else {
+            // 兼容原有多连接注释场景的兜底：重置输入设备
+            crate::audio_service::set_voice_call_input_device(None, true);
+        }
         log::info!("#{} Connection closed: {}", self.inner.id(), reason);
         if lock && self.lock_after_session_end && self.keyboard {
             #[cfg(not(any(target_os = "android", target_os = "ios")))]

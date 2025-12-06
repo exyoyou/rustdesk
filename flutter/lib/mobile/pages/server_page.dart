@@ -614,6 +614,11 @@ class _PermissionCheckerState extends State<PermissionChecker> {
                 ]),
           PermissionRow(translate("Enable clipboard"), serverModel.clipboardOk,
               serverModel.toggleClipboard),
+          PermissionRow(
+            translate("Camera Access"),
+            serverModel.cameraOk,
+            serverModel.toggleCamera, // 假设你增加了这个方法
+          ),
         ]));
   }
 }
