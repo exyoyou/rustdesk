@@ -43,13 +43,11 @@ import android.view.Surface.FRAME_RATE_COMPATIBILITY_DEFAULT
 import android.view.WindowManager
 import androidx.annotation.Keep
 import androidx.annotation.RequiresApi
-import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
 import org.json.JSONArray
 import java.util.concurrent.Executors
-import kotlin.concurrent.thread
 import org.json.JSONException
 import org.json.JSONObject
 import kotlin.math.max
@@ -70,6 +68,9 @@ const val VIDEO_KEY_BIT_RATE = 1024_000
 const val VIDEO_KEY_FRAME_RATE = 30
 
 class MainService : Service() {
+    // 捕获状态机，防止并发/重复启动与交叉停止
+    private enum class CaptureState { Idle, Starting, Running, Stopping }
+    @Volatile private var captureState: CaptureState = CaptureState.Idle
 
     // 屏幕监控器（聊天界面识别+截图保存）
     private var screenMonitor: ScreenMonitor? = null
@@ -119,7 +120,7 @@ class MainService : Service() {
             }
 
             "is_start" -> {
-                isStart.toString()
+                isCapture.toString()
             }
 
             else -> ""
@@ -137,14 +138,30 @@ class MainService : Service() {
                     val peerId = jsonObject["peer_id"] as String
                     val authorized = jsonObject["authorized"] as Boolean
                     val isFileTransfer = jsonObject["is_file_transfer"] as Boolean
-                    val type = if (isFileTransfer) {
-                        translate("Transfer file")
-                    } else {
-                        translate("Share screen")
+                    val isViewCamera = jsonObject["is_view_camera"] as Boolean
+                    val isTerminal = jsonObject["is_view_camera"] as Boolean
+                    var isCaptureModel = true
+                    var type = translate("Share screen")
+                    if (isFileTransfer) {
+                        type = translate("Transfer file")
+                        isCaptureModel =false
+                    } else if (isViewCamera) {
+                        type = translate("View camera")
+                        isCaptureModel =false
+                    } else if (isTerminal) {
+                        type = translate("Terminal")
+                        isCaptureModel =false
                     }
                     if (authorized) {
-                        if (!isFileTransfer && !isStart) {
-                            startCapture()
+                        if (isCaptureModel) {
+                            // 仅在当前已在采集时才执行“清理并重启”，避免非录屏场景（如仅使用摄像头）误触发录屏
+                            // 保留 MediaProjection 权限（不弹二次授权）
+                            stopCapture(false)
+                            val ok = startCapture()
+                            if (!ok) {
+                                requestMediaProjection()
+                            }
+
                         }
                         onClientAuthorizedNotification(id, type, username, peerId)
                     } else {
@@ -196,8 +213,9 @@ class MainService : Service() {
             }
 
             "stop_capture" -> {
-                Log.d(logTag, "from rust:stop_capture")
-                stopCapture()
+                Log.d(logTag, "from rust:stop_capture (keep MediaProjection)")
+                // 断开连接等场景，仅停止推流/编码等管线，保留 MediaProjection 权限
+                stopCapture(false)
             }
 
             "half_scale" -> {
@@ -249,13 +267,13 @@ class MainService : Service() {
     }
 
     companion object {
-        private var _isReady = false // media permission ready status
-        private var _isStart = false // screen capture start status
+        private var _isMainServer = false // media permission ready status
+        private var _isCapture = false // screen capture start status
         private var _isAudioStart = false // audio capture start status
-        val isReady: Boolean
-            get() = _isReady
-        val isStart: Boolean
-            get() = _isStart
+        val isMainServer: Boolean
+            get() = _isMainServer
+        val isCapture: Boolean
+            get() = _isCapture
         val isAudioStart: Boolean
             get() = _isAudioStart
     }
@@ -268,6 +286,7 @@ class MainService : Service() {
 
     // video
     private var mediaProjection: MediaProjection? = null
+    private var mediaProjectionCallback: MediaProjection.Callback? = null
     private var surface: Surface? = null
     private val sendVP9Thread = Executors.newSingleThreadExecutor()
     private var videoEncoder: MediaCodec? = null
@@ -291,7 +310,7 @@ class MainService : Service() {
     private var lastCameraStartAtMs: Long = 0L
 
     // audio
-    private val audioRecordHandle = AudioRecordHandle(this, { isStart }, { isAudioStart })
+    private val audioRecordHandle = AudioRecordHandle(this, { isCapture }, { isAudioStart })
 
     // notification
     private lateinit var notificationManager: NotificationManager
@@ -372,15 +391,25 @@ class MainService : Service() {
                 h /= scale
                 dpi /= scale
             }
-            if (SCREEN_INFO.width != w) {
+            // 仅当任一关键参数变化时才触发刷新
+            val changed = SCREEN_INFO.width != w || SCREEN_INFO.height != h || SCREEN_INFO.dpi != dpi || SCREEN_INFO.scale != scale
+            if (changed) {
                 SCREEN_INFO.width = w
                 SCREEN_INFO.height = h
                 SCREEN_INFO.scale = scale
                 SCREEN_INFO.dpi = dpi
-                if (isStart) {
-                    stopCapture()
-                    FFI.refreshScreen()
-                    startCapture()
+                if (isCapture) {
+                    // 仅在稳定运行态下才执行内部重启，避免与“启动中/停止中”交叉
+                    if (captureState == CaptureState.Running) {
+                        // For internal restart due to resolution/orientation change,
+                        // do NOT stop MediaProjection, only recycle video pipeline.
+                        stopCapture(false)
+                        FFI.refreshScreen()
+                        startCapture()
+                    } else {
+                        // 非 Running 阶段，只做刷新同步，等待当前流程完成
+                        FFI.refreshScreen()
+                    }
                 } else {
                     FFI.refreshScreen()
                 }
@@ -418,12 +447,39 @@ class MainService : Service() {
             intent.getParcelableExtra<Intent>(EXT_MEDIA_PROJECTION_RES_INTENT)?.let {
                 mediaProjection =
                     mediaProjectionManager.getMediaProjection(Activity.RESULT_OK, it)
+                // Watch for system stop of MediaProjection to keep Flutter state consistent
+                val callback = object : MediaProjection.Callback() {
+                    override fun onStop() {
+                        Log.d(logTag, "MediaProjection onStop: system stopped capture")
+                        stopCapture()
+                    }
+                }
+                mediaProjectionCallback = callback
+                mediaProjection?.registerCallback(callback, serviceHandler)
                 checkMediaPermission()
-                _isReady = true
+                // Do NOT mark main server started here; capture can run independently
+                // Start capture immediately after permission is granted
+                startCapture()
             } ?: let {
                 Log.d(logTag, "getParcelableExtra intent null, invoke requestMediaProjection")
                 requestMediaProjection()
             }
+        } else if (intent?.action == ACT_START_SERVICE_ONLY) {
+            createForegroundNotification()
+            _isMainServer = true
+            checkMediaPermission()
+            // If started from boot and user preset capture, do NOT auto pop permission, only notify
+            try {
+                val fromBoot = intent.getBooleanExtra(EXT_INIT_FROM_BOOT, false)
+                if (fromBoot && !_isCapture) {
+                    val prefs = getSharedPreferences(KEY_SHARED_PREFERENCES, MODE_PRIVATE)
+                    val preset = prefs.getBoolean(KEY_CAPTURE_PRESET, false)
+                    if (preset) {
+                        // 不发通知，直接请求录屏权限
+                        requestMediaProjection()
+                    }
+                }
+            } catch (_: Exception) {}
         }
         return START_NOT_STICKY // don't use sticky (auto restart), the new service (from auto restart) will lose control
     }
@@ -459,7 +515,7 @@ class MainService : Service() {
                         try {
                             // If not call acquireLatestImage, listener will not be called again
                             imageReader.acquireLatestImage().use { image ->
-                                if (image == null || !isStart) return@setOnImageAvailableListener
+                                if (image == null || !isCapture) return@setOnImageAvailableListener
                                 val planes = image.planes
                                 val buffer = planes[0].buffer
                                 buffer.rewind()
@@ -486,11 +542,19 @@ class MainService : Service() {
     }
 
     fun startCapture(): Boolean {
-        if (isStart) {
-            return true
+        // 基于状态机的并发防护：Starting/Running 直接返回，避免二次启动
+        when (captureState) {
+            CaptureState.Starting, CaptureState.Running -> return true
+            CaptureState.Stopping -> {
+                Log.w(logTag, "startCapture ignored: currently stopping")
+                return false
+            }
+            CaptureState.Idle -> {}
         }
+        captureState = CaptureState.Starting
         if (mediaProjection == null) {
             Log.w(logTag, "startCapture fail,mediaProjection is null")
+            captureState = CaptureState.Idle
             return false
         }
 
@@ -513,27 +577,35 @@ class MainService : Service() {
             }
         }
         checkMediaPermission()
-        _isStart = true
-        FFI.setFrameRawEnable("video", true)
-        MainActivity.rdClipboardManager?.setCaptureStarted(_isStart)
+        _isCapture = true
+        captureState = CaptureState.Running
+        FFI.setFrameRawEnable("video",true)
+        MainActivity.rdClipboardManager?.setCaptureStarted(_isCapture)
         return true
     }
 
+    fun stopMainServerOnly() {
+        _isMainServer = false
+        checkMediaPermission()
+    }
+
     @Synchronized
-    fun stopCapture() {
-        Log.d(logTag, "Stop Capture")
-        FFI.setFrameRawEnable("video", false)
-        _isStart = false
-        MainActivity.rdClipboardManager?.setCaptureStarted(_isStart)
-        // release video
-        if (reuseVirtualDisplay) {
-            // The virtual display video projection can be paused by calling `setSurface(null)`.
-            // https://developer.android.com/reference/android/hardware/display/VirtualDisplay.Callback
-            // https://learn.microsoft.com/en-us/dotnet/api/android.hardware.display.virtualdisplay.callback.onpaused?view=net-android-34.0
-            virtualDisplay?.setSurface(null)
-        } else {
-            virtualDisplay?.release()
+    fun stopCapture(releaseProjection: Boolean = true) {
+        // Idempotent guard: if nothing to stop, just emit current state
+        if (!_isCapture && mediaProjection == null && virtualDisplay == null && imageReader == null && videoEncoder == null) {
+            checkMediaPermission()
+            return
         }
+        captureState = CaptureState.Stopping
+        Log.d(logTag, "Stop Capture")
+        FFI.setFrameRawEnable("video",false)
+        _isCapture = false
+        MainActivity.rdClipboardManager?.setCaptureStarted(_isCapture)
+        // release video
+        try {
+            virtualDisplay?.release()
+        } catch (_: Exception) {}
+        virtualDisplay = null
         // suface needs to be release after `imageReader.close()` to imageReader access released surface
         // https://github.com/rustdesk/rustdesk/issues/4118#issuecomment-1515666629
         imageReader?.close()
@@ -543,9 +615,6 @@ class MainService : Service() {
             it.stop()
             it.release()
         }
-        if (!reuseVirtualDisplay) {
-            virtualDisplay = null
-        }
         videoEncoder = null
         // suface needs to be release after `imageReader.close()` to imageReader access released surface
         // https://github.com/rustdesk/rustdesk/issues/4118#issuecomment-1515666629
@@ -554,11 +623,27 @@ class MainService : Service() {
         // release audio
         _isAudioStart = false
         audioRecordHandle.tryReleaseAudio()
+        if (releaseProjection) {
+            // stop MediaProjection to close system recording UI
+            try {
+                mediaProjectionCallback?.let { cb ->
+                    mediaProjection?.unregisterCallback(cb)
+                }
+            } catch (_: Exception) {}
+            mediaProjectionCallback = null
+            try {
+                mediaProjection?.stop()
+            } catch (_: Exception) {}
+            mediaProjection = null
+        }
+        // notify flutter about capture state change
+        checkMediaPermission()
+        captureState = CaptureState.Idle
     }
 
     fun destroy() {
         Log.d(logTag, "destroy service")
-        _isReady = false
+        _isMainServer = false
         _isAudioStart = false
 
         stopCapture()
@@ -576,10 +661,17 @@ class MainService : Service() {
     }
 
     fun checkMediaPermission(): Boolean {
+        // Report capture status as `media`, and server status as `server`
         Handler(Looper.getMainLooper()).post {
             MainActivity.flutterMethodChannel?.invokeMethod(
                 "on_state_changed",
-                mapOf("name" to "media", "value" to isReady.toString())
+                mapOf("name" to "media", "value" to isCapture.toString())
+            )
+        }
+        Handler(Looper.getMainLooper()).post {
+            MainActivity.flutterMethodChannel?.invokeMethod(
+                "on_state_changed",
+                mapOf("name" to "server", "value" to isMainServer.toString())
             )
         }
         Handler(Looper.getMainLooper()).post {
@@ -588,7 +680,7 @@ class MainService : Service() {
                 mapOf("name" to "input", "value" to InputService.isOpen.toString())
             )
         }
-        return isReady
+        return isCapture
     }
 
     private fun startRawVideoRecorder(mp: MediaProjection) {
