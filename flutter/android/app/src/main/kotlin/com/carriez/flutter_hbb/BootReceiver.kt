@@ -33,7 +33,8 @@ class BootReceiver : BroadcastReceiver() {
             }
 
             val it = Intent(context, MainService::class.java).apply {
-                action = ACT_INIT_MEDIA_PROJECTION_AND_SERVICE
+                // Start main service only at boot; do not trigger capture permission here
+                action = ACT_START_SERVICE_ONLY
                 putExtra(EXT_INIT_FROM_BOOT, true)
             }
             Toast.makeText(context, "RustDesk is Open", Toast.LENGTH_LONG).show()

@@ -511,8 +511,18 @@ class ServerModel with ChangeNotifier {
     switch (name) {
       case "media":
         _mediaOk = value;
-        if (value && !_isStart) {
-          startService();
+        break;
+      case "server":
+        // 原生上报 MainService 是否运行
+        _isStart = value;
+        // 若用户预置了录屏且当前未录屏，则在服务启动后尝试一次在前台会自动弹权限）
+        if (isAndroid && _isStart && !_mediaOk) {
+          Future.microtask(() async {
+            final preset = await parent.target?.invokeMethod("get_capture_preset");
+            if (preset == true) {
+              await parent.target?.invokeMethod("start_capture");
+            }
+          });
         }
         break;
       case "input":
@@ -527,6 +537,7 @@ class ServerModel with ChangeNotifier {
         return;
     }
     notifyListeners();
+    if (isAndroid) androidUpdatekeepScreenOn();
   }
 
   // force
@@ -713,9 +724,7 @@ class ServerModel with ChangeNotifier {
   void sendLoginResponse(Client client, bool res) async {
     if (res) {
       bind.cmLoginRes(connId: client.id, res: res);
-      if (!client.isFileTransfer && !client.isTerminal) {
-        parent.target?.invokeMethod("start_capture");
-      }
+      // 接受连接时不自动触发屏幕录制，录制应由用户主动通过 UI 或明确操作开启。
       parent.target?.invokeMethod("cancel_notification", client.id);
       client.authorized = true;
       notifyListeners();
@@ -812,11 +821,22 @@ class ServerModel with ChangeNotifier {
     final on = ((keepScreenOn == KeepScreenOn.serviceOn) && _isStart) ||
         (keepScreenOn == KeepScreenOn.duringControlled &&
             _clients.map((e) => !e.disconnected).isNotEmpty);
-    if (on != await WakelockPlus.enabled) {
-      if (on) {
-        WakelockPlus.enable();
-      } else {
-        WakelockPlus.disable();
+    bool current = false;
+    try {
+      current = await WakelockPlus.enabled;
+    } catch (e) {
+      debugPrint("WakelockPlus.enabled failed: $e");
+      current = false; // fallback
+    }
+    if (on != current) {
+      try {
+        if (on) {
+          await WakelockPlus.enable();
+        } else {
+          await WakelockPlus.disable();
+        }
+      } catch (e) {
+        debugPrint("WakelockPlus toggle failed: $e");
       }
     }
   }
@@ -838,6 +858,26 @@ class ServerModel with ChangeNotifier {
       value: _cameraOk ? defaultOptionYes : 'N',
     );
     notifyListeners();
+  }
+
+  /// Toggle screen capture (录屏) from Flutter side.
+  toggleMedia() async {
+    if (_mediaOk) {
+      // stop capture
+      await parent.target?.invokeMethod("stop_capture");
+      // 状态由原生回调 on_state_changed(name: "media") 驱动
+      // persist preset = false
+      await parent.target?.invokeMethod("set_capture_preset", false);
+    } else {
+      // start capture
+      // 无论服务是否运行，都请求开启录屏（原生负责权限与可能的服务启动，仅用于录屏）
+      await parent.target?.invokeMethod("start_capture");
+      // persist preset = true
+      await parent.target?.invokeMethod("set_capture_preset", true);
+    }
+    // 客户端状态可能变化，尝试刷新
+    updateClientState();
+    if (isAndroid) androidUpdatekeepScreenOn();
   }
 }
 
