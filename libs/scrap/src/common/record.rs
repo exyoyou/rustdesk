@@ -16,7 +16,7 @@ use std::{
     sync::mpsc::Sender,
     time::Instant,
 };
-use webm::mux::{self, Segment, Track, VideoTrack, Writer};
+use webm::mux::{self, Segment, VideoTrack, Writer, AudioTrack, Track};
 
 const MIN_SECS: u64 = 1;
 
@@ -77,6 +77,11 @@ pub trait RecorderApi {
     where
         Self: Sized;
     fn write_video(&mut self, frame: &EncodedVideoFrame) -> bool;
+    // pts in microseconds
+    fn write_audio(&mut self, _data: &[u8], _pts_us: u64) -> bool {
+        let _ = (_data, _pts_us);
+        false
+    }
 }
 
 #[derive(Debug)]
@@ -93,6 +98,10 @@ pub struct Recorder {
     ctx2: Option<RecorderContext2>,
     pts: Option<i64>,
     check_failed: bool,
+    // audio timeline for recording (microseconds)
+    audio_pts_us: u64,
+    // assume Opus@48k stereo for remote audio unless specified in future
+    audio_sample_rate: u32,
 }
 
 impl Deref for Recorder {
@@ -117,6 +126,8 @@ impl Recorder {
             ctx2: None,
             pts: None,
             check_failed: false,
+            audio_pts_us: 0,
+            audio_sample_rate: 48_000,
         })
     }
 
@@ -165,6 +176,8 @@ impl Recorder {
             };
             // pts is None when new inner is created
             self.pts = None;
+            // reset audio timeline on new file
+            self.audio_pts_us = 0;
             self.send_state(RecordState::NewFile(ctx2.filename.clone()));
         }
         Ok(())
@@ -268,6 +281,106 @@ impl Recorder {
     fn send_state(&self, state: RecordState) {
         self.ctx.tx.as_ref().map(|tx| tx.send(state));
     }
+
+    /// Write an Opus packet into the recorder; timestamp is inferred as 20ms per packet by default.
+    pub fn write_audio_opus(&mut self, data: &[u8]) {
+        // guard
+        if self.check_failed {
+            return;
+        }
+        // do not write audio before the first video keyframe is accepted; wait for video timeline
+        if self.pts.is_none() {
+            return;
+        }
+        // lazy init guard
+        if self.inner.is_none() {
+            return;
+        }
+        // Align the first audio PTS to current video PTS (if available) to avoid early packets being rejected.
+        if self.audio_pts_us == 0 {
+            if let Some(v) = self.pts {
+                if v > 0 {
+                    // video pts is in milliseconds, convert to microseconds for audio timeline
+                    self.audio_pts_us = (v as u64).saturating_mul(1_000);
+                }
+            }
+        }
+        // 精确按 Opus 包实际时长推进时间线，减少累计误差和拖尾
+        let inc_us = opus_packet_duration_us(data, self.audio_sample_rate).unwrap_or(20_000);
+        let mut pts_us = self.audio_pts_us;
+        let video_us = (self.pts.unwrap_or_default() as u64).saturating_mul(1_000);
+        // 若音频时间戳落后于当前视频时间线，则“快进”到不早于视频的最近边界，避免向 mux 发送全是“过去的帧”导致拒包
+        if pts_us < video_us {
+            let behind = video_us.saturating_sub(pts_us);
+            let steps = (behind + inc_us - 1) / inc_us; // ceil(behind/inc_us)
+            let new_pts = pts_us.saturating_add(steps.saturating_mul(inc_us));
+            pts_us = new_pts;
+            self.audio_pts_us = new_pts;
+        }
+        if let Some(inner) = self.as_mut() {
+            let wrote = inner.write_audio(data, pts_us);
+            // 推进策略：
+            // 1) 若写入成功，正常推进音频时间线。
+            // 2) 若失败，但推进后仍不超过视频时间线，则允许小步前进，避免因集群(timecode)边界/量化造成的“死等”。
+            // 3) 若失败且推进会超前视频，则保持不动，等待视频追上。
+            if wrote {
+                self.audio_pts_us = self.audio_pts_us.saturating_add(inc_us);
+                self.send_state(RecordState::NewFrame);
+            } else {
+                let next_audio_us = self.audio_pts_us.saturating_add(inc_us);
+                if next_audio_us <= video_us {
+                    self.audio_pts_us = next_audio_us;
+                }
+            }
+        }
+    }
+}
+
+/// 根据 Opus TOC 与包内帧数，估算该包的时长（微秒）。
+/// 参考 libopus 的 opus_packet_get_samples_per_frame 与 opus_packet_get_nb_frames 实现。
+fn opus_packet_duration_us(packet: &[u8], sample_rate: u32) -> Option<u64> {
+    if packet.is_empty() || sample_rate == 0 { return None; }
+    let toc = packet[0];
+    let spf = opus_samples_per_frame(toc, sample_rate) as u64; // samples per frame
+    let nbf = opus_nb_frames(packet)? as u64; // number of frames
+    let samples = spf.saturating_mul(nbf);
+    if samples == 0 { return None; }
+    Some(samples.saturating_mul(1_000_000) / (sample_rate as u64))
+}
+
+#[inline]
+fn opus_samples_per_frame(toc: u8, fs: u32) -> u32 {
+    // 直接移植自 libopus：
+    // if (toc & 0x80)      size = Fs/400;   // 2.5ms
+    // else if ((toc & 0x60) == 0x60) size = Fs/50;   // 20ms
+    // else if (toc & 0x60) size = Fs/100;  // 10ms
+    // else                 size = Fs/200;  // 5ms
+    if (toc & 0x80) != 0 {
+        fs / 400
+    } else if (toc & 0x60) == 0x60 {
+        fs / 50
+    } else if (toc & 0x60) != 0 {
+        fs / 100
+    } else {
+        fs / 200
+    }
+}
+
+#[inline]
+fn opus_nb_frames(packet: &[u8]) -> Option<u32> {
+    if packet.is_empty() { return None; }
+    let toc = packet[0] & 0x03; // bottom two bits
+    if toc == 0 { // one frame in the packet
+        Some(1)
+    } else if toc != 3 { // two frames
+        Some(2)
+    } else {
+        // Code 3: N frames, count is in the next byte's lower 6 bits
+        if packet.len() < 2 { return None; }
+        let n = (packet[1] & 0x3F) as u32;
+        // Guard against 0, which would stall PTS advancement; treat as at least 1 frame
+        Some(n.max(1))
+    }
 }
 
 struct WebmRecorder {
@@ -278,6 +391,11 @@ struct WebmRecorder {
     key: bool,
     written: bool,
     start: Instant,
+    // optional audio track for Opus
+    at: Option<AudioTrack>, // Opus audio track
+    // track last pts (ns) per stream for proper finalize duration and diagnostics
+    last_video_ns: u64,
+    last_audio_ns: u64,
 }
 
 impl RecorderApi for WebmRecorder {
@@ -315,6 +433,33 @@ impl RecorderApi for WebmRecorder {
                 bail!("Failed to set codec private");
             }
         }
+        // Add an Opus audio track (48k stereo) and attach minimal OpusHead for better compatibility.
+        let mut at: Option<AudioTrack> = Some(webm.add_audio_track(48_000, 2, None, mux::AudioCodecId::Opus));
+        if at.is_some() {
+            fn opus_head_bytes(channels: u8, sample_rate: u32, pre_skip: u16, output_gain_q8: i16, mapping_family: u8) -> Vec<u8> {
+                let mut v = Vec::with_capacity(19);
+                v.extend_from_slice(b"OpusHead");
+                v.push(1);
+                v.push(channels);
+                v.extend_from_slice(&pre_skip.to_le_bytes());
+                v.extend_from_slice(&sample_rate.to_le_bytes());
+                v.extend_from_slice(&output_gain_q8.to_le_bytes());
+                v.push(mapping_family);
+                v
+            }
+            let opus_head = opus_head_bytes(2, 48_000, 0, 0, 0);
+            let mut set_ok = false;
+            let vtn = vt.track_number();
+            for cand in [vtn.saturating_add(1), vtn.saturating_add(2), vtn.saturating_add(3), vtn.saturating_add(4)] {
+                if webm.set_codec_private(cand, &opus_head) {
+                    set_ok = true;
+                    break;
+                }
+            }
+            if !set_ok {
+                log::warn!("Unable to attach OpusHead CodecPrivate to audio track; some muxers may reject audio frames or players may not decode");
+            }
+        }
         Ok(WebmRecorder {
             vt,
             webm: Some(webm),
@@ -323,6 +468,9 @@ impl RecorderApi for WebmRecorder {
             key: false,
             written: false,
             start: Instant::now(),
+            at,
+            last_video_ns: 0,
+            last_audio_ns: 0,
         })
     }
 
@@ -331,11 +479,28 @@ impl RecorderApi for WebmRecorder {
             self.key = true;
         }
         if self.key {
-            let ok = self
-                .vt
-                .add_frame(&frame.data, frame.pts as u64 * 1_000_000, frame.key);
+            let pts_ns = (frame.pts as u64).saturating_mul(1_000_000);
+            let ok = self.vt.add_frame(&frame.data, pts_ns, frame.key);
             if ok {
                 self.written = true;
+                self.last_video_ns = pts_ns;
+            }
+            ok
+        } else {
+            false
+        }
+    }
+
+    fn write_audio(&mut self, data: &[u8], pts_us: u64) -> bool {
+        if let (Some(ref mut _webm), Some(ref mut at)) = (self.webm.as_mut(), self.at.as_mut()) {
+            // For audio, key flag is always true
+            // convert us -> ns as add_frame expects nanoseconds
+            let pts_ns = pts_us.saturating_mul(1_000);
+            // Mark audio blocks as non-key for safety
+            let ok = at.add_frame(data, pts_ns, false);
+            if ok {
+                self.written = true;
+                self.last_audio_ns = pts_ns;
             }
             ok
         } else {
@@ -346,9 +511,13 @@ impl RecorderApi for WebmRecorder {
 
 impl Drop for WebmRecorder {
     fn drop(&mut self) {
-        let _ = std::mem::replace(&mut self.webm, None).map_or(false, |webm| webm.finalize(None));
+        // Provide best-effort duration to help players show progress bar
+        let duration_ns = self.last_video_ns.max(self.last_audio_ns);
+        let finalize_ok = std::mem::replace(&mut self.webm, None)
+            .map_or(false, |webm| webm.finalize(Some(duration_ns)));
         let mut state = RecordState::WriteTail;
-        if !self.written || self.start.elapsed().as_secs() < MIN_SECS {
+        let should_remove = !self.written || self.start.elapsed().as_secs() < MIN_SECS;
+        if should_remove {
             std::fs::remove_file(&self.ctx2.filename).ok();
             state = RecordState::RemoveFile;
         }

@@ -1909,9 +1909,19 @@ impl<T: InvokeUiSession> Remote<T> {
                 }
                 Some(message::Union::AudioFrame(frame)) => {
                     if !self.handler.lc.read().unwrap().disable_audio.v {
+                        // send to audio playback thread
                         self.audio_sender
-                            .send(MediaData::AudioFrame(Box::new(frame)))
+                            .send(MediaData::AudioFrame(Box::new(frame.clone())))
                             .ok();
+                        // also forward to each video thread when recording is active, so recorder can mux audio
+                        if self.last_record_state {
+                            for (_, thread) in self.video_threads.iter() {
+                                thread
+                                    .video_sender
+                                    .send(MediaData::AudioFrame(Box::new(frame.clone())))
+                                    .ok();
+                            }
+                        }
                     }
                 }
                 Some(message::Union::FileAction(action)) => match action.union {

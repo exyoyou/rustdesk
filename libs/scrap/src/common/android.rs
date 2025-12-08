@@ -53,6 +53,7 @@ pub struct PixelBuffer<'a> {
     width: usize,
     height: usize,
     stride: Vec<usize>,
+    pixfmt: Pixfmt,
 }
 
 impl<'a> PixelBuffer<'a> {
@@ -65,6 +66,22 @@ impl<'a> PixelBuffer<'a> {
             width,
             height,
             stride,
+            pixfmt: Pixfmt::RGBA,
+        }
+    }
+
+    // 用于 I420（YUV420P）连续缓冲：[Y][U][V]
+    pub fn new_i420(data: &'a [u8], width: usize, height: usize) -> Self {
+        // 对于紧凑 I420：Y stride = w，U/V stride = w/2
+        let mut stride = Vec::new();
+        stride.push(width);
+        stride.push(width / 2);
+        PixelBuffer {
+            data,
+            width,
+            height,
+            stride,
+            pixfmt: Pixfmt::I420,
         }
     }
 }
@@ -86,9 +103,7 @@ impl<'a> crate::TraitPixelBuffer for PixelBuffer<'a> {
         self.stride.clone()
     }
 
-    fn pixfmt(&self) -> Pixfmt {
-        Pixfmt::RGBA
-    }
+    fn pixfmt(&self) -> Pixfmt { self.pixfmt }
 }
 
 pub struct Display {

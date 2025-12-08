@@ -1,6 +1,7 @@
 package com.carriez.flutter_hbb
 
 import ffi.FFI
+import ffi.AndroidYuv420Frame
 
 /**
  * Capture screen,get video and audio,send to rust.
@@ -21,6 +22,11 @@ import android.content.res.Configuration
 import android.content.res.Configuration.ORIENTATION_LANDSCAPE
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraDevice
+import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CameraCaptureSession
+import android.hardware.camera2.CaptureRequest
 import android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR
 import android.hardware.display.VirtualDisplay
 import android.media.*
@@ -29,6 +35,8 @@ import android.media.projection.MediaProjectionManager
 import android.os.*
 import android.util.DisplayMetrics
 import android.util.Log
+import android.util.Size
+import android.graphics.Rect
 import android.view.Surface
 import android.view.Surface.FRAME_RATE_COMPATIBILITY_DEFAULT
 import android.view.WindowManager
@@ -38,11 +46,11 @@ import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
+import org.json.JSONArray
 import java.util.concurrent.Executors
 import kotlin.concurrent.thread
 import org.json.JSONException
 import org.json.JSONObject
-import java.nio.ByteBuffer
 import kotlin.math.max
 import kotlin.math.min
 
@@ -183,6 +191,24 @@ class MainService : Service() {
                 }
                 
             }
+            "start_camera" -> {
+                // arg1: cameraId (e.g., "0")
+                 startCameraCapture(arg1)
+                Log.d(logTag, "from rust:start_camera")
+            }
+            "stop_camera" -> {
+                // Debounce/guard: stop from an old service may arrive after a new start during switches.
+                serviceHandler?.postDelayed({
+                    val now = SystemClock.elapsedRealtime()
+                    val sinceStart = now - lastCameraStartAtMs
+                    if (isCameraCapturing && sinceStart < 1000L) {
+                        Log.w(logTag, "Ignore stop_camera due to recent start (${sinceStart}ms ago), likely stale from previous service")
+                    } else {
+                        stopCameraCapture()
+                    }
+                }, 300L)
+                Log.d(logTag, "from rust:stop_camera")
+            }
             else -> {
             }
         }
@@ -219,6 +245,18 @@ class MainService : Service() {
     private var videoEncoder: MediaCodec? = null
     private var imageReader: ImageReader? = null
     private var virtualDisplay: VirtualDisplay? = null
+    // camera
+    private var cameraDevice: CameraDevice? = null
+    private var cameraSession: CameraCaptureSession? = null
+    private var cameraImageReader: ImageReader? = null
+    private var isCameraCapturing: Boolean = false
+    private var activeCameraId: String? = null
+    // Guard concurrent opens/switches: only the latest token is valid
+    private var cameraOpenToken: Int = 0
+    // Watchdog: last time we received a camera frame (elapsedRealtime ms)
+    private var lastCameraFrameAtMs: Long = 0L
+    // Timestamp when current camera session started (elapsedRealtime ms)
+    private var lastCameraStartAtMs: Long = 0L
 
     // audio
     private val audioRecordHandle = AudioRecordHandle(this, { isStart }, { isAudioStart })
@@ -726,4 +764,293 @@ class MainService : Service() {
             .build()
         notificationManager.notify(DEFAULT_NOTIFY_ID, notification)
     }
+
+    /**
+     * 获取所有摄像头的信息（id、名字、分辨率、前后摄像头）
+     * 结果格式为 JSON 字符串，便于 Rust/JNI 解析
+     */
+    @Keep
+    fun getCameraListJson(ctx: Context): String {
+        val mgr = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val arr = JSONArray()
+        try {
+            for (id in mgr.cameraIdList) {
+                val chars = mgr.getCameraCharacteristics(id)
+                val lensFacing = chars.get(CameraCharacteristics.LENS_FACING)
+                val streamMap = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                var width = 0
+                var height = 0
+                var name = "Camera-$id"
+                if (streamMap != null) {
+                    // 获取支持的输出分辨率（选最大分辨率）
+                    val sizes: Array<Size>? =
+                        streamMap.getOutputSizes(android.graphics.ImageFormat.YUV_420_888)
+                    if (sizes != null && sizes.isNotEmpty()) {
+                        val best = sizes.maxByOrNull { it.width * it.height } ?: sizes[0]
+                        width = best.width
+                        height = best.height
+                    }
+                }
+                if (lensFacing == CameraCharacteristics.LENS_FACING_FRONT)
+                    name += "-front"
+                else if (lensFacing == CameraCharacteristics.LENS_FACING_BACK)
+                    name += "-back"
+
+                val obj = JSONObject()
+                obj.put("id", id)
+                obj.put("name", name)
+                obj.put("width", width)
+                obj.put("height", height)
+                obj.put("facing", lensFacing ?: -1)
+                arr.put(obj)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        return arr.toString()
+    }
+
+
+    // region Camera capture (YUV_420_888 -> RGBA -> FFI.onVideoFrameUpdate)
+    @Keep
+    fun startCameraCapture(cameraId: String): Boolean {
+        // 已在采集中且目标相机相同，直接复用
+        if (isCameraCapturing && activeCameraId == cameraId) return true
+        // 已在采集中但目标不同，先停止再切换
+        if (isCameraCapturing && activeCameraId != cameraId) {
+            // 停止当前相机，但不要在此处增加 token，避免后续新打开的 token 被意外失效
+            stopCameraCaptureInternal(skipCloseSession = false)
+        }
+        // 在确保旧相机已停止后，再“统一”地生成新的 openToken，避免切换时出现双重递增导致的新会话帧被误判为过期
+        val openToken = (cameraOpenToken + 1).coerceAtLeast(1)
+        cameraOpenToken = openToken
+        val hasPerm = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!hasPerm) {
+            Log.w(logTag, "startCameraCapture: CAMERA permission not granted")
+            return false
+        }
+
+        val mgr = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val chars = try {
+            mgr.getCameraCharacteristics(cameraId)
+        } catch (e: Exception) {
+            Log.e(logTag, "getCameraCharacteristics fail: $e")
+            return false
+        }
+        val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+        if (map == null) {
+            Log.e(logTag, "No SCALER_STREAM_CONFIGURATION_MAP for camera $cameraId")
+            return false
+        }
+        val sizes = map.getOutputSizes(android.graphics.ImageFormat.YUV_420_888)
+        if (sizes == null || sizes.isEmpty()) {
+            Log.e(logTag, "No YUV_420_888 output sizes for camera $cameraId")
+            return false
+        }
+        val best = sizes.maxByOrNull { it.width * it.height } ?: sizes[0]
+        val w = best.width
+        val h = best.height
+        Log.d(logTag, "startCameraCapture: choose size ${w}x${h} for $cameraId")
+
+        cameraImageReader =
+            ImageReader.newInstance(w, h, android.graphics.ImageFormat.YUV_420_888, 4).apply {
+                setOnImageAvailableListener({ reader ->
+                    try {
+                        reader.acquireLatestImage()?.use { image ->
+                            // Drop frames if capture stopped or a newer open has superseded us
+                            if (!isCameraCapturing || openToken != cameraOpenToken) return@use
+                            // Build AndroidYuv420Frame and hand off to Rust for libyuv packing
+                            val planes = image.planes
+                            // Rewind buffers to ensure position=0 before handing to JNI
+                            planes[0].buffer.rewind()
+                            planes[1].buffer.rewind()
+                            planes[2].buffer.rewind()
+                            // Update watchdog timestamp
+                            lastCameraFrameAtMs = SystemClock.elapsedRealtime()
+                            val frame = AndroidYuv420Frame(
+                                width = w,
+                                height = h,
+                                y = planes[0].buffer,
+                                u = planes[1].buffer,
+                                v = planes[2].buffer,
+                                yRowStride = planes[0].rowStride,
+                                uRowStride = planes[1].rowStride,
+                                vRowStride = planes[2].rowStride,
+                                uPixelStride = planes[1].pixelStride,
+                                vPixelStride = planes[2].pixelStride,
+                                tsNanos = try { image.timestamp } catch (_: Throwable) { 0L }
+                            )
+                            FFI.onCameraYuvFrame(frame)
+                        }
+                    } catch (_: Exception) {
+                    }
+                }, serviceHandler)
+            }
+
+        try {
+            mgr.openCamera(cameraId, object : CameraDevice.StateCallback() {
+                override fun onOpened(device: CameraDevice) {
+                    // Ignore stale callbacks from a previous open attempt
+                    if (openToken != cameraOpenToken) {
+                        try { device.close() } catch (_: Exception) {}
+                        return
+                    }
+                    cameraDevice = device
+                    try {
+                        val surface = cameraImageReader!!.surface
+                        val req = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                            addTarget(surface)
+                            set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+                            // 设置最小可用倍率（最广角）
+                            try {
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                    val zoomRange = chars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
+                                    val minZoom = zoomRange?.lower ?: 1.0f
+                                    set(CaptureRequest.CONTROL_ZOOM_RATIO, minZoom)
+                                } else {
+                                    val active: Rect? = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+                                    if (active != null) {
+                                        // 1.0x 缩放 = 使用完整 active array（无裁剪）
+                                        set(CaptureRequest.SCALER_CROP_REGION, active)
+                                    }
+                                }
+                            } catch (_: Exception) {}
+                        }
+                        device.createCaptureSession(
+                            listOf(surface),
+                            object : CameraCaptureSession.StateCallback() {
+                                override fun onConfigured(session: CameraCaptureSession) {
+                                    if (openToken != cameraOpenToken) {
+                                        try { session.close() } catch (_: Exception) {}
+                                        return
+                                    }
+                                    cameraSession = session
+                                    try {
+                                        session.setRepeatingRequest(
+                                            req.build(),
+                                            null,
+                                            serviceHandler
+                                        )
+                                        isCameraCapturing = true
+                                        activeCameraId = cameraId
+                                        // Reset watchdog time and start watchdog loop
+                                        val nowTs = SystemClock.elapsedRealtime()
+                                        lastCameraStartAtMs = nowTs
+                                        lastCameraFrameAtMs = nowTs
+                                        FFI.setFrameRawEnable("camera", true)
+                                        Log.d(
+                                            logTag,
+                                            "Camera capture started: $cameraId @ ${w}x${h}"
+                                        )
+                                        scheduleCameraWatchdog(cameraId, openToken)
+                                    } catch (e: Exception) {
+                                        Log.e(logTag, "setRepeatingRequest failed: $e")
+                                        stopCameraCapture()
+                                        scheduleCameraRetry(cameraId)
+                                    }
+                                }
+
+                                override fun onConfigureFailed(session: CameraCaptureSession) {
+                                    Log.e(logTag, "Camera capture session configure failed")
+                                    stopCameraCapture()
+                                    scheduleCameraRetry(cameraId)
+                                }
+                            },
+                            serviceHandler
+                        )
+                    } catch (e: Exception) {
+                        Log.e(logTag, "create session failed: $e")
+                        stopCameraCapture()
+                        scheduleCameraRetry(cameraId)
+                    }
+                }
+
+                override fun onDisconnected(device: CameraDevice) {
+                    Log.w(logTag, "Camera disconnected: $cameraId")
+                    // 在断开时，可能底层已进入错误/关闭态，避免触发 stopRepeating 的异常日志
+                    stopCameraCaptureInternal(skipCloseSession = true)
+                    scheduleCameraRetry(cameraId)
+                }
+
+                override fun onError(device: CameraDevice, error: Int) {
+                    Log.e(logTag, "Camera error($error): $cameraId")
+                    // 相机发生严重错误时，避免在 close() 内触发 stopRepeating 异常日志
+                    stopCameraCaptureInternal(skipCloseSession = true)
+                    scheduleCameraRetry(cameraId)
+                }
+            }, serviceHandler)
+        } catch (e: SecurityException) {
+            Log.e(logTag, "openCamera SecurityException: $e")
+            return false
+        } catch (e: Exception) {
+            Log.e(logTag, "openCamera exception: $e")
+            return false
+        }
+        return true
+    }
+
+    @Keep
+    fun stopCameraCapture() {
+        stopCameraCaptureInternal(skipCloseSession = false)
+    }
+
+    private fun stopCameraCaptureInternal(skipCloseSession: Boolean) {
+        Log.d(logTag, "stopCameraCapture${if (skipCloseSession) "(skip session close)" else ""}")
+        isCameraCapturing = false
+        activeCameraId = null
+        // Invalidate any in-flight callbacks from previous open
+        cameraOpenToken += 1
+        // Reset watchdog
+        lastCameraFrameAtMs = 0L
+        // 先关闭帧推送，避免并发拉帧
+        try { FFI.setFrameRawEnable("camera", false) } catch (_: Exception) {}
+        // 尝试停止/中止请求，防止 close 内部再触发 stopRepeating 异常
+        if (!skipCloseSession) {
+            try { cameraSession?.stopRepeating() } catch (_: Exception) {}
+            try { cameraSession?.abortCaptures() } catch (_: Exception) {}
+            try { cameraSession?.close() } catch (_: Exception) {}
+        }
+        cameraSession = null
+        try { cameraDevice?.close() } catch (_: Exception) {}
+        cameraDevice = null
+        try { cameraImageReader?.close() } catch (_: Exception) {}
+        cameraImageReader = null
+    }
+
+    private fun scheduleCameraRetry(cameraId: String, delayMs: Long = 250L) {
+        // Only retry if nothing is currently capturing and target camera is same or none
+        serviceHandler?.postDelayed({
+            if (!isCameraCapturing && (activeCameraId == null || activeCameraId == cameraId)) {
+                Log.w(logTag, "Retry opening camera $cameraId after failure")
+                startCameraCapture(cameraId)
+            }
+        }, delayMs)
+    }
+
+    private fun scheduleCameraWatchdog(cameraId: String, tokenAtStart: Int, intervalMs: Long = 1000L) {
+        // Periodically check if frames are flowing; if stalled, restart the camera
+        serviceHandler?.postDelayed({
+            // Abort if a new open has started or capture stopped
+            if (tokenAtStart != cameraOpenToken || !isCameraCapturing || activeCameraId != cameraId) {
+                return@postDelayed
+            }
+            val now = SystemClock.elapsedRealtime()
+            val last = lastCameraFrameAtMs
+            // If no frames for > 1.5s, assume session is stuck and restart quickly
+            if (last > 0 && now - last > 1500L) {
+                Log.w(logTag, "Camera watchdog: no frames for ${now - last}ms, restarting $cameraId")
+                stopCameraCaptureInternal(skipCloseSession = true)
+                scheduleCameraRetry(cameraId, 100L)
+                return@postDelayed
+            }
+            // Reschedule next watchdog tick
+            scheduleCameraWatchdog(cameraId, tokenAtStart, intervalMs)
+        }, intervalMs)
+    }
+
+    // endregion
+
 }

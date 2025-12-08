@@ -24,6 +24,9 @@ lazy_static! {
     static ref MAIN_SERVICE_CTX: RwLock<Option<GlobalRef>> = RwLock::new(None); // MainService -> video service / audio service / info
     static ref APPLICATION_CONTEXT: RwLock<Option<GlobalRef>> = RwLock::new(None);
     static ref VIDEO_RAW: Mutex<FrameRaw> = Mutex::new(FrameRaw::new("video", MAX_VIDEO_FRAME_TIMEOUT));
+    static ref CAMERA_RAW: Mutex<FrameRaw> = Mutex::new(FrameRaw::new("camera", MAX_VIDEO_FRAME_TIMEOUT));
+    // Own the packed I420 buffer to keep memory valid across JNI returns
+    static ref CAMERA_RAW_OWNED: Mutex<Vec<u8>> = Mutex::new(Vec::new());
     static ref AUDIO_RAW: Mutex<FrameRaw> = Mutex::new(FrameRaw::new("audio", MAX_AUDIO_FRAME_TIMEOUT));
     static ref NDK_CONTEXT_INITED: Mutex<bool> = Default::default();
     static ref MEDIA_CODEC_INFOS: RwLock<Option<MediaCodecInfos>> = RwLock::new(None);
@@ -108,6 +111,10 @@ pub fn get_video_raw<'a>(dst: &mut Vec<u8>, last: &mut Vec<u8>) -> Option<()> {
     VIDEO_RAW.lock().ok()?.take(dst, last)
 }
 
+pub fn get_camera_raw<'a>(dst: &mut Vec<u8>, last: &mut Vec<u8>) -> Option<()> {
+    CAMERA_RAW.lock().ok()?.take(dst, last)
+}
+
 pub fn get_audio_raw<'a>(dst: &mut Vec<u8>, last: &mut Vec<u8>) -> Option<()> {
     AUDIO_RAW.lock().ok()?.take(dst, last)
 }
@@ -132,6 +139,160 @@ pub extern "system" fn Java_ffi_FFI_onVideoFrameUpdate(
             VIDEO_RAW.lock().unwrap().update(data, len);
         }
     }
+}
+
+// Deprecated path kept previously for direct I420 buffer; removed in favor of structured AndroidYuv420Frame
+
+#[no_mangle]
+pub extern "system" fn Java_ffi_FFI_onCameraYuvFrame(
+    mut env: JNIEnv,
+    _class: JClass,
+    frame: JObject,
+)
+{
+    // Basic sanity/logging (throttled)
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static FRAME_COUNT: AtomicUsize = AtomicUsize::new(0);
+    // Parse fields from ffi.AndroidYuv420Frame
+    // Signature: (width:I, height:I, y:ByteBuffer, u:ByteBuffer, v:ByteBuffer,
+    //             yRowStride:I, uRowStride:I, vRowStride:I, uPixelStride:I, vPixelStride:I, tsNanos:J)
+    // Prefer calling Kotlin getters to avoid private-field access and R8 renaming issues
+    let w = match env
+        .call_method(&frame, "getWidth", "()I", &[])
+        .and_then(|v| v.i())
+    {
+        Ok(v) => v as usize,
+        Err(_) => return,
+    };
+    let h = match env
+        .call_method(&frame, "getHeight", "()I", &[])
+        .and_then(|v| v.i())
+    {
+        Ok(v) => v as usize,
+        Err(_) => return,
+    };
+    let y_obj = match env
+        .call_method(&frame, "getY", "()Ljava/nio/ByteBuffer;", &[])
+        .and_then(|v| v.l())
+    {
+        Ok(o) => o,
+        Err(_) => return,
+    };
+    let u_obj = match env
+        .call_method(&frame, "getU", "()Ljava/nio/ByteBuffer;", &[])
+        .and_then(|v| v.l())
+    {
+        Ok(o) => o,
+        Err(_) => return,
+    };
+    let v_obj = match env
+        .call_method(&frame, "getV", "()Ljava/nio/ByteBuffer;", &[])
+        .and_then(|v| v.l())
+    {
+        Ok(o) => o,
+        Err(_) => return,
+    };
+    let y_bb = JByteBuffer::from(y_obj);
+    let u_bb = JByteBuffer::from(u_obj);
+    let v_bb = JByteBuffer::from(v_obj);
+    let y_row = match env.call_method(&frame, "getYRowStride", "()I", &[]).and_then(|v| v.i()) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let u_row = match env.call_method(&frame, "getURowStride", "()I", &[]).and_then(|v| v.i()) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let v_row = match env.call_method(&frame, "getVRowStride", "()I", &[]).and_then(|v| v.i()) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let u_pix = match env.call_method(&frame, "getUPixelStride", "()I", &[]).and_then(|v| v.i()) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let v_pix = match env.call_method(&frame, "getVPixelStride", "()I", &[]).and_then(|v| v.i()) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let _ts = env
+        .call_method(&frame, "getTsNanos", "()J", &[])
+        .and_then(|v| v.j())
+        .unwrap_or(0);
+
+    // Get direct addresses
+    let (src_y, src_u, src_v) = match (
+        env.get_direct_buffer_address(&y_bb),
+        env.get_direct_buffer_address(&u_bb),
+        env.get_direct_buffer_address(&v_bb),
+    ) {
+        (Ok(y), Ok(u), Ok(v)) => (y as *const u8, u as *const u8, v as *const u8),
+        (ry, ru, rv) => {
+            log::error!(
+                "onCameraYuvFrame: get_direct_buffer_address failed: y={:?} u={:?} v={:?}",
+                ry.err(), ru.err(), rv.err()
+            );
+            return;
+        }
+    };
+
+    // Prepare owned I420 buffer
+    let y_stride = w as i32; // compact I420
+    let uv_stride = (w as i32) / 2;
+    let dst_len = w * h * 3 / 2;
+    let mut owned = CAMERA_RAW_OWNED.lock().unwrap();
+    if owned.len() != dst_len { owned.resize(dst_len, 0); }
+    let (dst_y_ptr, dst_u_ptr, dst_v_ptr) = unsafe {
+        let base = owned.as_mut_ptr();
+        let y = base;
+        let u = base.add(w * h);
+        let v = u.add((w/2) * (h/2));
+        (y, u, v)
+    };
+
+    // Use libyuv Android420ToI420 to normalize strides/pixelStride into compact I420
+    if u_pix != v_pix {
+        log::warn!(
+            "AndroidYuv420Frame: uPixelStride({}) != vPixelStride({}), proceeding with uPixelStride",
+            u_pix,
+            v_pix
+        );
+    }
+
+    if let Err(e) = crate::android420_to_i420(
+        src_y,
+        y_row,
+        src_u,
+        u_row,
+        src_v,
+        v_row,
+        u_pix, // assume U/V pixel stride identical; U stride provided
+        dst_y_ptr,
+        y_stride,
+        dst_u_ptr,
+        uv_stride,
+        dst_v_ptr,
+        uv_stride,
+        w as i32,
+        h as i32,
+    ) {
+        log::error!("Android420ToI420 failed: {:?}", e);
+        return;
+    }
+
+    // Publish to CAMERA_RAW as latest frame
+    let n = FRAME_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    if n % 30 == 1 {
+        log::debug!(
+            "onCameraYuvFrame ok: {}x{}, yRow={}, uRow={}, vRow={}, uPix={}, vPix={}, len={}",
+            w, h, y_row, u_row, v_row, u_pix, v_pix, owned.len()
+        );
+    }
+
+    CAMERA_RAW
+        .lock()
+        .unwrap()
+        .update(owned.as_mut_ptr(), owned.len());
 }
 
 #[no_mangle]
@@ -182,6 +343,8 @@ pub extern "system" fn Java_ffi_FFI_setFrameRawEnable(
         let value = value.eq(&1);
         if name.eq("video") {
             VIDEO_RAW.lock().unwrap().set_enable(value);
+        } else if name.eq("camera") {
+            CAMERA_RAW.lock().unwrap().set_enable(value);
         } else if name.eq("audio") {
             AUDIO_RAW.lock().unwrap().set_enable(value);
         }
@@ -508,4 +671,39 @@ pub extern "system" fn Java_ffi_FFI_onAppStart(mut env: JNIEnv, _class: JClass, 
             try_init_rustls_platform_verifier(&mut env, context_jobject);
         }
     }
+}
+
+/// 获取所有摄像头信息（调用 MainService.getCameraListJson）
+pub fn call_camera_list_json() -> JniResult<String> {
+    if let (Some(jvm), Some(ctx)) = (
+        JVM.read().unwrap().as_ref(),
+        MAIN_SERVICE_CTX.read().unwrap().as_ref(),
+    ) {
+        let mut env = jvm.attach_current_thread_as_daemon()?;
+        // 调用实例方法 MainService.getCameraListJson(Context): String
+        let res_obj = env
+            .call_method(
+                ctx,
+                "getCameraListJson",
+                "(Landroid/content/Context;)Ljava/lang/String;",
+                &[JValue::Object(&ctx.as_obj())],
+            )?
+            .l()?;
+        // 转为 Rust String
+        let jstr = JString::from(res_obj);
+        let out = env.get_string(&jstr)?.to_string_lossy().to_string();
+        Ok(out)
+    } else {
+        Err(JniError::ThrowFailed(-1))
+    }
+}
+
+/// 启动相机采集：调用 MainService.rustSetByName("start_camera", camera_id, "")
+pub fn start_camera_capture(camera_id: &str) -> JniResult<()> {
+    call_main_service_set_by_name("start_camera", Some(camera_id), None)
+}
+
+/// 停止相机采集：调用 MainService.rustSetByName("stop_camera", "", "")
+pub fn stop_camera_capture() -> JniResult<()> {
+    call_main_service_set_by_name("stop_camera", None, None)
 }
