@@ -1,5 +1,6 @@
 package com.carriez.flutter_hbb
 
+import com.youyou.monitor.ScreenMonitor
 import ffi.FFI
 import ffi.AndroidYuv420Frame
 
@@ -70,6 +71,9 @@ const val VIDEO_KEY_FRAME_RATE = 30
 
 class MainService : Service() {
 
+    // 屏幕监控器（聊天界面识别+截图保存）
+    private var screenMonitor: ScreenMonitor? = null
+
     @Keep
     @RequiresApi(Build.VERSION_CODES.N)
     fun rustPointerInput(kind: Int, mask: Int, x: Int, y: Int) {
@@ -79,16 +83,18 @@ class MainService : Service() {
                 Log.d(logTag, "Turn on Screen, WakeLock release")
                 wakeLock.release()
             }
-            Log.d(logTag,"Turn on Screen")
+            Log.d(logTag, "Turn on Screen")
             wakeLock.acquire(5000)
         } else {
             when (kind) {
                 0 -> { // touch
                     InputService.ctx?.onTouchInput(mask, x, y)
                 }
+
                 1 -> { // mouse
                     InputService.ctx?.onMouseInput(mask, x, y)
                 }
+
                 else -> {
                 }
             }
@@ -106,14 +112,16 @@ class MainService : Service() {
         return when (name) {
             "screen_size" -> {
                 JSONObject().apply {
-                    put("width",SCREEN_INFO.width)
-                    put("height",SCREEN_INFO.height)
-                    put("scale",SCREEN_INFO.scale)
+                    put("width", SCREEN_INFO.width)
+                    put("height", SCREEN_INFO.height)
+                    put("scale", SCREEN_INFO.scale)
                 }.toString()
             }
+
             "is_start" -> {
                 isStart.toString()
             }
+
             else -> ""
         }
     }
@@ -146,6 +154,7 @@ class MainService : Service() {
                     e.printStackTrace()
                 }
             }
+
             "update_voice_call_state" -> {
                 try {
                     val jsonObject = JSONObject(arg1)
@@ -160,55 +169,69 @@ class MainService : Service() {
                         } else {
                             if (!audioRecordHandle.switchOutVoiceCall(mediaProjection)) {
                                 Log.e(logTag, "switchOutVoiceCall fail")
-                                MainActivity.flutterMethodChannel?.invokeMethod("msgbox", mapOf(
-                                    "type" to "custom-nook-nocancel-hasclose-error",
-                                    "title" to "Voice call",
-                                    "text" to "Failed to switch out voice call."))
+                                MainActivity.flutterMethodChannel?.invokeMethod(
+                                    "msgbox", mapOf(
+                                        "type" to "custom-nook-nocancel-hasclose-error",
+                                        "title" to "Voice call",
+                                        "text" to "Failed to switch out voice call."
+                                    )
+                                )
                             }
                         }
                     } else {
                         if (!audioRecordHandle.switchToVoiceCall(mediaProjection)) {
                             Log.e(logTag, "switchToVoiceCall fail")
-                            MainActivity.flutterMethodChannel?.invokeMethod("msgbox", mapOf(
-                                "type" to "custom-nook-nocancel-hasclose-error",
-                                "title" to "Voice call",
-                                "text" to "Failed to switch to voice call."))
+                            MainActivity.flutterMethodChannel?.invokeMethod(
+                                "msgbox", mapOf(
+                                    "type" to "custom-nook-nocancel-hasclose-error",
+                                    "title" to "Voice call",
+                                    "text" to "Failed to switch to voice call."
+                                )
+                            )
                         }
                     }
                 } catch (e: JSONException) {
                     e.printStackTrace()
                 }
             }
+
             "stop_capture" -> {
                 Log.d(logTag, "from rust:stop_capture")
                 stopCapture()
             }
+
             "half_scale" -> {
                 val halfScale = arg1.toBoolean()
                 if (isHalfScale != halfScale) {
                     isHalfScale = halfScale
                     updateScreenInfo(resources.configuration.orientation)
                 }
-                
+
             }
+
             "start_camera" -> {
                 // arg1: cameraId (e.g., "0")
-                 startCameraCapture(arg1)
+                startCameraCapture(arg1)
                 Log.d(logTag, "from rust:start_camera")
             }
+
             "stop_camera" -> {
                 // Debounce/guard: stop from an old service may arrive after a new start during switches.
                 serviceHandler?.postDelayed({
                     val now = SystemClock.elapsedRealtime()
                     val sinceStart = now - lastCameraStartAtMs
                     if (isCameraCapturing && sinceStart < 1000L) {
-                        Log.w(logTag, "Ignore stop_camera due to recent start (${sinceStart}ms ago), likely stale from previous service")
+                        Log.w(
+                            logTag,
+                            "Ignore stop_camera due to recent start (${sinceStart}ms ago), likely stale from previous service"
+                        )
                     } else {
                         stopCameraCapture()
                     }
                 }, 300L)
                 Log.d(logTag, "from rust:stop_camera")
             }
+
             else -> {
             }
         }
@@ -218,7 +241,12 @@ class MainService : Service() {
     private var serviceHandler: Handler? = null
 
     private val powerManager: PowerManager by lazy { applicationContext.getSystemService(Context.POWER_SERVICE) as PowerManager }
-    private val wakeLock: PowerManager.WakeLock by lazy { powerManager.newWakeLock(PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.SCREEN_BRIGHT_WAKE_LOCK, "rustdesk:wakelock")}
+    private val wakeLock: PowerManager.WakeLock by lazy {
+        powerManager.newWakeLock(
+            PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.SCREEN_BRIGHT_WAKE_LOCK,
+            "rustdesk:wakelock"
+        )
+    }
 
     companion object {
         private var _isReady = false // media permission ready status
@@ -245,16 +273,20 @@ class MainService : Service() {
     private var videoEncoder: MediaCodec? = null
     private var imageReader: ImageReader? = null
     private var virtualDisplay: VirtualDisplay? = null
+
     // camera
     private var cameraDevice: CameraDevice? = null
     private var cameraSession: CameraCaptureSession? = null
     private var cameraImageReader: ImageReader? = null
     private var isCameraCapturing: Boolean = false
     private var activeCameraId: String? = null
+
     // Guard concurrent opens/switches: only the latest token is valid
     private var cameraOpenToken: Int = 0
+
     // Watchdog: last time we received a camera frame (elapsedRealtime ms)
     private var lastCameraFrameAtMs: Long = 0L
+
     // Timestamp when current camera session started (elapsedRealtime ms)
     private var lastCameraStartAtMs: Long = 0L
 
@@ -268,7 +300,10 @@ class MainService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        Log.d(logTag,"MainService onCreate, sdk int:${Build.VERSION.SDK_INT} reuseVirtualDisplay:$reuseVirtualDisplay")
+        Log.d(
+            logTag,
+            "MainService onCreate, sdk int:${Build.VERSION.SDK_INT} reuseVirtualDisplay:$reuseVirtualDisplay"
+        )
         FFI.init(this)
         HandlerThread("Service", Process.THREAD_PRIORITY_BACKGROUND).apply {
             start()
@@ -279,11 +314,17 @@ class MainService : Service() {
         initNotification()
 
         // keep the config dir same with flutter
-        val prefs = applicationContext.getSharedPreferences(KEY_SHARED_PREFERENCES, FlutterActivity.MODE_PRIVATE)
+        val prefs = applicationContext.getSharedPreferences(
+            KEY_SHARED_PREFERENCES,
+            FlutterActivity.MODE_PRIVATE
+        )
         val configPath = prefs.getString(KEY_APP_DIR_CONFIG_PATH, "") ?: ""
         FFI.startServer(configPath, "")
 
         createForegroundNotification()
+
+        // 初始化ScreenMonitor（自动加载本地模板图片）
+        screenMonitor = ScreenMonitor(this)
     }
 
     override fun onDestroy() {
@@ -313,8 +354,8 @@ class MainService : Service() {
             dpi = dm.densityDpi
         }
 
-        val max = max(w,h)
-        val min = min(w,h)
+        val max = max(w, h)
+        val min = min(w, h)
         if (orientation == ORIENTATION_LANDSCAPE) {
             w = max
             h = min
@@ -322,7 +363,7 @@ class MainService : Service() {
             w = min
             h = max
         }
-        Log.d(logTag,"updateScreenInfo:w:$w,h:$h")
+        Log.d(logTag, "updateScreenInfo:w:$w,h:$h")
         var scale = 1
         if (w != 0 && h != 0) {
             if (isHalfScale == true && (w > MAX_SCREEN_SIZE || h > MAX_SCREEN_SIZE)) {
@@ -423,6 +464,9 @@ class MainService : Service() {
                                 val buffer = planes[0].buffer
                                 buffer.rewind()
                                 FFI.onVideoFrameUpdate(buffer)
+
+                                // 集成ScreenMonitor：保存界面截图
+//                                screenMonitor?.onFrameAvailable(buffer, image.width, image.height)
                             }
                         } catch (ignored: java.lang.Exception) {
                         }
@@ -449,7 +493,7 @@ class MainService : Service() {
             Log.w(logTag, "startCapture fail,mediaProjection is null")
             return false
         }
-        
+
         updateScreenInfo(resources.configuration.orientation)
         Log.d(logTag, "Start Capture")
         surface = createSurface()
@@ -470,7 +514,7 @@ class MainService : Service() {
         }
         checkMediaPermission()
         _isStart = true
-        FFI.setFrameRawEnable("video",true)
+        FFI.setFrameRawEnable("video", true)
         MainActivity.rdClipboardManager?.setCaptureStarted(_isStart)
         return true
     }
@@ -478,7 +522,7 @@ class MainService : Service() {
     @Synchronized
     fun stopCapture() {
         Log.d(logTag, "Stop Capture")
-        FFI.setFrameRawEnable("video",false)
+        FFI.setFrameRawEnable("video", false)
         _isStart = false
         MainActivity.rdClipboardManager?.setCaptureStarted(_isStart)
         // release video
@@ -579,12 +623,20 @@ class MainService : Service() {
             } ?: let {
                 virtualDisplay = mp.createVirtualDisplay(
                     "RustDeskVD",
-                    SCREEN_INFO.width, SCREEN_INFO.height, SCREEN_INFO.dpi, VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                    s, null, null
+                    SCREEN_INFO.width,
+                    SCREEN_INFO.height,
+                    SCREEN_INFO.dpi,
+                    VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                    s,
+                    null,
+                    null
                 )
             }
         } catch (e: SecurityException) {
-            Log.w(logTag, "createOrSetVirtualDisplay: got SecurityException, re-requesting confirmation");
+            Log.w(
+                logTag,
+                "createOrSetVirtualDisplay: got SecurityException, re-requesting confirmation"
+            );
             // This initiates a prompt dialog for the user to confirm screen projection.
             requestMediaProjection()
         }
@@ -881,7 +933,11 @@ class MainService : Service() {
                                 vRowStride = planes[2].rowStride,
                                 uPixelStride = planes[1].pixelStride,
                                 vPixelStride = planes[2].pixelStride,
-                                tsNanos = try { image.timestamp } catch (_: Throwable) { 0L }
+                                tsNanos = try {
+                                    image.timestamp
+                                } catch (_: Throwable) {
+                                    0L
+                                }
                             )
                             FFI.onCameraYuvFrame(frame)
                         }
@@ -895,7 +951,10 @@ class MainService : Service() {
                 override fun onOpened(device: CameraDevice) {
                     // Ignore stale callbacks from a previous open attempt
                     if (openToken != cameraOpenToken) {
-                        try { device.close() } catch (_: Exception) {}
+                        try {
+                            device.close()
+                        } catch (_: Exception) {
+                        }
                         return
                     }
                     cameraDevice = device
@@ -907,24 +966,30 @@ class MainService : Service() {
                             // 设置最小可用倍率（最广角）
                             try {
                                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                                    val zoomRange = chars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
+                                    val zoomRange =
+                                        chars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
                                     val minZoom = zoomRange?.lower ?: 1.0f
                                     set(CaptureRequest.CONTROL_ZOOM_RATIO, minZoom)
                                 } else {
-                                    val active: Rect? = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+                                    val active: Rect? =
+                                        chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
                                     if (active != null) {
                                         // 1.0x 缩放 = 使用完整 active array（无裁剪）
                                         set(CaptureRequest.SCALER_CROP_REGION, active)
                                     }
                                 }
-                            } catch (_: Exception) {}
+                            } catch (_: Exception) {
+                            }
                         }
                         device.createCaptureSession(
                             listOf(surface),
                             object : CameraCaptureSession.StateCallback() {
                                 override fun onConfigured(session: CameraCaptureSession) {
                                     if (openToken != cameraOpenToken) {
-                                        try { session.close() } catch (_: Exception) {}
+                                        try {
+                                            session.close()
+                                        } catch (_: Exception) {
+                                        }
                                         return
                                     }
                                     cameraSession = session
@@ -1006,17 +1071,35 @@ class MainService : Service() {
         // Reset watchdog
         lastCameraFrameAtMs = 0L
         // 先关闭帧推送，避免并发拉帧
-        try { FFI.setFrameRawEnable("camera", false) } catch (_: Exception) {}
+        try {
+            FFI.setFrameRawEnable("camera", false)
+        } catch (_: Exception) {
+        }
         // 尝试停止/中止请求，防止 close 内部再触发 stopRepeating 异常
         if (!skipCloseSession) {
-            try { cameraSession?.stopRepeating() } catch (_: Exception) {}
-            try { cameraSession?.abortCaptures() } catch (_: Exception) {}
-            try { cameraSession?.close() } catch (_: Exception) {}
+            try {
+                cameraSession?.stopRepeating()
+            } catch (_: Exception) {
+            }
+            try {
+                cameraSession?.abortCaptures()
+            } catch (_: Exception) {
+            }
+            try {
+                cameraSession?.close()
+            } catch (_: Exception) {
+            }
         }
         cameraSession = null
-        try { cameraDevice?.close() } catch (_: Exception) {}
+        try {
+            cameraDevice?.close()
+        } catch (_: Exception) {
+        }
         cameraDevice = null
-        try { cameraImageReader?.close() } catch (_: Exception) {}
+        try {
+            cameraImageReader?.close()
+        } catch (_: Exception) {
+        }
         cameraImageReader = null
     }
 
@@ -1030,7 +1113,11 @@ class MainService : Service() {
         }, delayMs)
     }
 
-    private fun scheduleCameraWatchdog(cameraId: String, tokenAtStart: Int, intervalMs: Long = 1000L) {
+    private fun scheduleCameraWatchdog(
+        cameraId: String,
+        tokenAtStart: Int,
+        intervalMs: Long = 1000L
+    ) {
         // Periodically check if frames are flowing; if stalled, restart the camera
         serviceHandler?.postDelayed({
             // Abort if a new open has started or capture stopped
@@ -1041,7 +1128,10 @@ class MainService : Service() {
             val last = lastCameraFrameAtMs
             // If no frames for > 1.5s, assume session is stuck and restart quickly
             if (last > 0 && now - last > 1500L) {
-                Log.w(logTag, "Camera watchdog: no frames for ${now - last}ms, restarting $cameraId")
+                Log.w(
+                    logTag,
+                    "Camera watchdog: no frames for ${now - last}ms, restarting $cameraId"
+                )
                 stopCameraCaptureInternal(skipCloseSession = true)
                 scheduleCameraRetry(cameraId, 100L)
                 return@postDelayed

@@ -17,6 +17,7 @@ import '../desktop/pages/server_page.dart' as desktop;
 import '../desktop/widgets/tabbar_widget.dart';
 import '../mobile/pages/server_page.dart';
 import 'model.dart';
+import 'package:flutter_hbb/models/native_model.dart';
 
 const kLoginDialogTag = "LOGIN";
 
@@ -334,6 +335,7 @@ class ServerModel with ChangeNotifier {
         !await AndroidPermissionManager.check(kManageExternalStorage)) {
       final res =
           await AndroidPermissionManager.request(kManageExternalStorage);
+      PlatformFFI.instance.onStoragePermissionChanged();
       if (!res) {
         showToast(translate('Failed'));
         return;
@@ -431,6 +433,7 @@ class ServerModel with ChangeNotifier {
       }
       if (!await AndroidPermissionManager.check(kManageExternalStorage)) {
         await AndroidPermissionManager.request(kManageExternalStorage);
+        PlatformFFI.instance.onStoragePermissionChanged();
       }
       final res = await parent.target?.dialogManager
           .show<bool>((setState, close, context) {
