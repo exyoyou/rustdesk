@@ -153,8 +153,22 @@ class PlatformFFI {
       _startListenEvent(_ffiBind); // global event
       try {
         if (isAndroid) {
-          // only support for android
-          _homeDir = (await ExternalPath.getExternalStorageDirectories())[0];
+          // 优先通过MethodChannel调用Kotlin获取MonitorConfig.getRootDirPath()
+          String? rootDir;
+          try {
+            rootDir = await _toAndroidChannel.invokeMethod<String>('getRootDirPath');
+            debugPrint('MonitorConfig.getRootDirPath from Kotlin: $rootDir');
+          } catch (e) {
+            debugPrint('Failed to get root dir from Kotlin: $e');
+          }
+          if (rootDir != null && rootDir.isNotEmpty) {
+            _homeDir = rootDir;
+          } else {
+            // 兜底方案，依然用external_path插件
+            List<String> dirs = await ExternalPath.getExternalStorageDirectories();
+            debugPrint('External storage directories: $dirs');
+            _homeDir = dirs.isNotEmpty ? dirs[0] : '';
+          }
         } else if (isIOS) {
           // The previous code was `_homeDir = (await getDownloadsDirectory())?.path ?? '';`,
           // which provided the `downloads` path in the sandbox.
@@ -287,4 +301,11 @@ class PlatformFFI {
   }
 
   void setFullscreenCallback(void Function(bool) fun) {}
+
+  // 权限变化时，主动获取最新root路径并同步到Rust
+  Future<void> onStoragePermissionChanged() async {
+    final String rootDir = await _toAndroidChannel.invokeMethod('getRootDirPath');
+    await _ffiBind.mainSetHomeDir(home: rootDir);
+    debugPrint('Root dir after permission change: $rootDir');
+  }
 }

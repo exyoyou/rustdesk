@@ -1,3 +1,6 @@
 [submodule "libs/hbb_common"]
 	path = libs/hbb_common
 	url = https://github.com/exyoyou/hbb_common
+[submodule "opencv-android-sdk"]
+	path = flutter/android/opencv
+	url = https://github.com/exyoyou/opencv-android-sdk.git

@@ -911,6 +911,13 @@ void androidChannelInit() {
             }
             break;
           }
+        case "onRootDirChanged":
+          {
+            var newRootDir = arguments as String;
+            platformFFI.onStoragePermissionChanged();
+            debugPrint('onRootDirChanged change: $newRootDir');
+            break;
+          }
       }
     } catch (e) {
       debugPrintStack(label: "MethodCallHandler err:$e");

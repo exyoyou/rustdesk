@@ -129,6 +129,14 @@ class MainActivity : FlutterActivity() {
         flutterMethodChannel.setMethodCallHandler { call, result ->
             // make sure result will be invoked, otherwise flutter will await forever
             when (call.method) {
+                "getRootDirPath" -> {
+                    try {
+                        val dir = com.youyou.monitor.MonitorConfig.getInstance().getRootDir().absolutePath
+                        result.success(dir)
+                    } catch (e: Exception) {
+                        result.error("-1", "Failed to get root dir: ${e.message}", null)
+                    }
+                }
                 "init_service" -> {
                     Intent(activity, MainService::class.java).also {
                         bindService(it, serviceConnection, Context.BIND_AUTO_CREATE)

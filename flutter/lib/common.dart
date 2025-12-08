@@ -45,6 +45,7 @@ import 'package:flutter_hbb/native/win32.dart'
 import 'package:flutter_hbb/native/common.dart'
     if (dart.library.html) 'package:flutter_hbb/web/common.dart';
 import 'package:flutter_hbb/utils/http_service.dart' as http;
+import 'package:flutter_hbb/models/native_model.dart';
 
 final globalKey = GlobalKey<NavigatorState>();
 final navigationBarKey = GlobalKey();
@@ -2564,6 +2565,7 @@ connect(BuildContext context, String id,
           if (!await AndroidPermissionManager.request(kManageExternalStorage)) {
             return;
           }
+          PlatformFFI.instance.onStoragePermissionChanged();
         }
       }
       if (isWeb) {
