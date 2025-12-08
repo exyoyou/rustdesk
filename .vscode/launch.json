@@ -1,0 +1,72 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "attach",
+            "name": "Attach remote android",
+            "pid": "${input:androidRunId}",
+            "initCommands": [
+                "platform select remote-android",
+                "platform connect unix-abstract-connect:///data/data/com.carriez.flutter_hbb/debug.sock",
+                "settings set target.source-map /proc/self/cwd ${workspaceFolder}",
+                "settings set target.source-map /rustc ${env:HOME}/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust",
+                "settings set target.source-map /android/rustc ${env:HOME}/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust",
+                "settings set target.source-map /cargo/registry ${env:HOME}/.cargo/registry/src",
+                "settings set target.source-map /usr/local/cargo/registry ${env:HOME}/.cargo/registry/src",
+                "settings set target.debug-file-search-paths ${workspaceFolder}/target/aarch64-linux-android/debug/deps:${workspaceFolder}/target/aarch64-linux-android/debug",
+                "settings set target.exec-search-paths ${workspaceFolder}/target/aarch64-linux-android/debug",
+                "settings set target.process.stop-on-sharedlibrary-events false",
+                "settings set target.process.stop-on-exec false",
+                "settings set target.load-script-from-symbol-file true",
+                "settings set target.process.thread.step-avoid-regexp '^(std::|__cxa_|android\\.|java\\.|com\\.android\\.|dalvik\\.|art::|__jit_debug_|.*Binder.*|.*Daemon.*|.*ThreadedRenderer.*)'",
+                "process handle SIGSEGV --stop false --pass true --notify false",
+                "process handle SIGBUS --stop false --pass true --notify false",
+                "command source ${workspaceFolder}/.vscode/.lldbinit"
+            ],
+            // "preLaunchTask": "lldb-server-run",
+            "stopOnEntry": false
+        },
+        {
+            "name": "Flutter_Liunx",
+            "request": "launch",
+            "type": "dart",
+            "flutterMode": "debug", // 或 "profile", "release"
+            "program": "flutter/lib/main.dart",
+            "preLaunchTask": "build-rust-optional-linux",
+            "deviceId": "linux"
+        },
+        {
+            "name": "Flutter_Android_x64",
+            "request": "launch",
+            "type": "dart",
+            "flutterMode": "debug", // 或 "profile", "release"
+            "program": "flutter/lib/main.dart",
+            "preLaunchTask": "build-rust-optional-android-x86_64",
+            "deviceId": "emulator-5554"
+        },
+        {
+            "name": "Flutter_Android_arm64",
+            "request": "launch",
+            "type": "dart",
+            "flutterMode": "debug", // 或 "profile", "release"
+            "program": "flutter/lib/main.dart",
+            "preLaunchTask": "build-rust-optional-android-arm64",
+            "deviceId": "1C161FDEE009H6",
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug Rust (Linux)",
+            "program": "${workspaceFolder}/flutter/build/linux/x64/debug/bundle/rustdesk"
+        }
+    ],
+    "inputs": [
+        {
+            "id": "androidRunId",
+            "type": "promptString",
+            "description": "请输入远程android的程序pid (或运行 get_android_pid.sh 获取)",
+            "default": ""
+        }
+    ]
+}

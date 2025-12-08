@@ -1,0 +1,60 @@
+# Android LLDB调试配置 - 性能优化版本
+# 专注于Rust代码调试，最小化系统开销
+
+# 性能优化设置
+settings set target.process.utility-expression-timeout 5
+settings set target.process.stop-on-sharedlibrary-events false
+settings set target.process.stop-on-exec false
+settings set target.max-children-count 64
+settings set target.max-string-summary-length 256
+
+# 增强的源码映射设置 - 修复断点变灰问题
+settings set target.source-map /proc/self/cwd /home/youyou/rustdesk
+settings set target.source-map /rustc ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust
+# 添加Android目标特定的源码映射
+settings set target.source-map /android/rustc ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust
+settings set target.source-map /cargo/registry ~/.cargo/registry/src
+settings set target.source-map /usr/local/cargo/registry ~/.cargo/registry/src
+
+# 调试符号和可执行文件搜索路径
+settings set target.debug-file-search-paths /home/youyou/rustdesk/target/aarch64-linux-android/debug/deps:/home/youyou/rustdesk/target/aarch64-linux-android/debug
+settings set target.exec-search-paths /home/youyou/rustdesk/target/aarch64-linux-android/debug
+
+# 启用调试信息搜索
+settings set target.load-script-from-symbol-file true
+settings set target.auto-import-clang-modules true
+
+# 轻量级信号处理 - 仅关键信号
+process handle SIGSEGV --stop false --pass true --notify false
+process handle SIGBUS --stop false --pass true --notify false
+process handle SIGPIPE --stop false --pass true --notify false
+
+# 高性能步进过滤 - 简化正则表达式
+settings set target.process.thread.step-avoid-regexp '^(std::|__cxa_|android\\.|java\\.|art::)'
+
+# Android系统断点自动继续 - 激活以避免系统中断
+breakpoint set -r '@android\\..*' --auto-continue true
+breakpoint set -r '@java\\..*' --auto-continue true
+; breakpoint set -n "@__jit_debug_register_code" --auto-continue true
+breakpoint set -r '@__jit_debug.*' --auto-continue true
+
+# 优化调试体验 - 减少开销
+settings set target.inline-breakpoint-strategy never
+settings set target.process.thread.step-out-avoid-nodebug true
+settings set target.load-script-from-symbol-file false
+
+# 简化的命令别名
+command alias bfl breakpoint set --file %1 --line %2
+command alias bfn breakpoint set --name %1
+command alias blist breakpoint list
+command alias bdel breakpoint delete
+
+# 精简的Rust类型显示
+type summary add --summary-string "${var.ptr.data}" rust_string
+type summary add --summary-string "${var.ptr.data}" str
+
+# 最小化启动输出
+echo "======================================="
+echo "Android LLDB性能优化版本已加载"
+echo "专注Rust代码调试，减少系统开销"
+echo "======================================="

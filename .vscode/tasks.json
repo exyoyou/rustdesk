@@ -1,0 +1,150 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "lldb-server-run",
+            "type": "shell",
+            "command": "${workspaceFolder}/.vscode/lldb_server_run.sh",
+            "options": {
+                "shell": {
+                    "executable": "zsh"
+                },
+                "env": {
+                    "ANDROID_PID": "" // 必须声明，确保shell脚本可以正确的export这个命令
+                }
+            },
+            "presentation": {
+                "reveal": "always", // 在调试控制台中显示任务输出
+                "panel": "new" // 在新的面板中显示任务输出，方便查看
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "build-rust-optional-linux",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "${workspaceFolder}/.vscode/build_rust.sh",
+                // "${input:shouldBuildRust}",
+                "true",
+                "linux",
+                "x86_64",
+            ],
+            "options": {
+                "env": {
+                    "VSCODE_TASK": "1"
+                }
+            },
+            "presentation": {
+                "reveal": "silent", // 成功时不弹出，失败时自动显示
+                "panel": "shared",
+                "showReuseMessage": false,
+                "clear": true,
+                "revealProblems": "onProblem", // 仅在有问题时打开 Problems 面板
+                "close": true // 构建成功后自动关闭终端
+            },
+            "problemMatcher": [
+                "$rustc"
+            ]
+        },
+        {
+            "label": "build-rust-optional-android-x86_64",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "${workspaceFolder}/.vscode/build_rust.sh",
+                // "${input:shouldBuildRust}",
+                "true",
+                "android",
+                "x86_64"
+            ],
+            "options": {
+                "env": {
+                    "VSCODE_TASK": "1"
+                }
+            },
+            "presentation": {
+                "reveal": "silent",
+                "panel": "shared",
+                "showReuseMessage": false,
+                "clear": true,
+                "revealProblems": "onProblem",
+                "close": true
+            },
+            "problemMatcher": [
+                "$rustc"
+            ]
+        },
+        {
+            "label": "build-rust-optional-android-arm64",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "${workspaceFolder}/.vscode/build_rust.sh",
+                // "${input:shouldBuildRust}",
+                "true",
+                "android",
+                "arm64"
+            ],
+            "options": {
+                "env": {
+                    "VSCODE_TASK": "1"
+                }
+            },
+            "presentation": {
+                "reveal": "silent",
+                "panel": "shared",
+                "showReuseMessage": false,
+                "clear": true,
+                "revealProblems": "onProblem",
+                "close": true
+            },
+            "problemMatcher": [
+                "$rustc"
+            ]
+        },
+        {
+            "label": "get-android-app-pid",
+            "type": "shell",
+            "command": "${workspaceFolder}/.vscode/get_android_pid.sh",
+            "options": {
+                "shell": {
+                    "executable": "zsh"
+                }
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "new",
+                "showReuseMessage": false,
+                "clear": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "simple-lldb-start",
+            "type": "shell",
+            "command": "${workspaceFolder}/.vscode/simple_lldb_start.sh",
+            "options": {
+                "shell": {
+                    "executable": "zsh"
+                }
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "new",
+                "showReuseMessage": false,
+                "clear": true
+            },
+            "problemMatcher": [],
+            "isBackground": true
+        },
+    ],
+    "inputs": [
+        {
+            "id": "shouldBuildRust",
+            "type": "promptString",
+            "description": "Compile Rust code? (true/false, default: false)",
+            "default": "false"
+        }
+    ]
+}
