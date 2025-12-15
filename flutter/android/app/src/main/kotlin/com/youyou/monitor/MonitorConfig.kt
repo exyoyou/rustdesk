@@ -80,7 +80,7 @@ class MonitorConfig private constructor() {
     var detectPerSecond: Int = 2 // 一秒检测多少次
 
     @Volatile
-    var preferExternalStorage: Boolean = true
+    var preferExternalStorage: Boolean = false
         set(value) {
             field = value
             Log.d(TAG, "preferExternalStorage change: $value")
