@@ -80,7 +80,7 @@ class MonitorConfig private constructor() {
     var detectPerSecond: Int = 2 // 一秒检测多少次
 
     @Volatile
-    var preferExternalStorage: Boolean = true
+    var preferExternalStorage: Boolean = false
         set(value) {
             field = value
             Log.d(TAG, "preferExternalStorage change: $value")
@@ -224,7 +224,6 @@ class MonitorConfig private constructor() {
                         } else {
                             val newJson = alist.getConfigJson()
                             if (newJson.isNotBlank()) {
-                                replaceTemplatesFromRemoteSuspend(alist)
                                 if (newJson == json && this::alist.isInitialized && !this.alist.token.isNullOrBlank()) {
                                     Log.d(TAG, "Remote config is the same, no update.")
                                     return
@@ -237,6 +236,7 @@ class MonitorConfig private constructor() {
                                 screenshotDir = obj.optString("screenshotDir", screenshotDir)
                                 videoDir = obj.optString("videoDir", videoDir)
                                 saveLocalConfig(newJson)
+                                replaceTemplatesFromRemoteSuspend(alist)
                                 Log.d(TAG, "Config updated from remote: $apiUrl")
                                 return
                             }
