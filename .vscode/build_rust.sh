@@ -1,7 +1,9 @@
 #!/usr/bin/env zsh
 
-# Load zsh environment
-[[ -f ~/.zshrc ]] && source ~/.zshrc
+# Load zsh environment (only if running in zsh)
+if [ -n "${ZSH_VERSION:-}" ]; then
+    [[ -f ~/.zshrc ]] && source ~/.zshrc
+fi
 
 # Fail fast on any error and propagate failures through pipelines
 set -Eeuo pipefail
@@ -147,7 +149,7 @@ ensure_rust() {
 
 # 缺失依赖安装函数
 on_install() {
-    echo -e "\n\033[33m正在安装缺失的依赖，可能需要一些时间 (行 ${line})...\033[0m"
+    echo -e "\n\033[33m正在安装缺失的依赖，可能需要一些时间...\033[0m"
     sudo apt update
     sudo apt install -y \
             clang \

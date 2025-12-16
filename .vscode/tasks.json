@@ -22,7 +22,7 @@
         {
             "label": "build-rust-optional-linux",
             "type": "shell",
-            "command": "bash",
+            "command": "zsh",
             "args": [
                 "${workspaceFolder}/.vscode/build_rust.sh",
                 // "${input:shouldBuildRust}",
@@ -50,7 +50,7 @@
         {
             "label": "build-rust-optional-android-x86_64",
             "type": "shell",
-            "command": "bash",
+            "command": "zsh",
             "args": [
                 "${workspaceFolder}/.vscode/build_rust.sh",
                 // "${input:shouldBuildRust}",
@@ -78,7 +78,7 @@
         {
             "label": "build-rust-optional-android-arm64",
             "type": "shell",
-            "command": "bash",
+            "command": "zsh",
             "args": [
                 "${workspaceFolder}/.vscode/build_rust.sh",
                 // "${input:shouldBuildRust}",
