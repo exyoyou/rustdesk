@@ -8,6 +8,26 @@ fi
 # Fail fast on any error and propagate failures through pipelines
 set -Eeuo pipefail
 
+# Ensure we're in the workspace root directory
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+cd "${WORKSPACE_ROOT}"
+echo "Working directory: ${WORKSPACE_ROOT}"
+
+# 初始化并更新 git submodule
+if [ -d ".git" ]; then
+    echo -e "\n\033[33m检查 git submodule...\033[0m"
+    if [ -f ".gitmodules" ]; then
+        echo "初始化并更新 submodule..."
+        git submodule update --init --recursive
+        echo -e "\033[32mSubmodule 更新完成\033[0m"
+    else
+        echo "未检测到 .gitmodules 文件，跳过 submodule 初始化"
+    fi
+else
+    echo -e "\033[33m警告: 不是 git 仓库，跳过 submodule 检查\033[0m"
+fi
+
 # When running from VS Code task, keep the terminal open on failure
 on_error() {
     local line="$1"
@@ -72,11 +92,112 @@ ensure_flutter() {
         echo "初始化 Flutter..."
         flutter doctor
         
+        # 自动写入 ~/.zshrc
+        if ! grep -q 'HOME/flutter/bin' ~/.zshrc 2>/dev/null; then
+            echo '' >> ~/.zshrc
+            echo '# Flutter SDK' >> ~/.zshrc
+            echo 'export PATH="$HOME/flutter/bin:$PATH"' >> ~/.zshrc
+            echo -e "\033[32mFlutter PATH 已添加到 ~/.zshrc\033[0m"
+        fi
+        
         echo -e "\033[32mFlutter 安装完成！\033[0m"
-        echo -e "\033[33m建议将以下内容添加到 ~/.zshrc:\033[0m"
-        echo 'export PATH="$HOME/flutter/bin:$PATH"'
     else
         echo "Flutter 已安装: $(flutter --version | head -n 1)"
+    fi
+}
+
+# 检测并配置 Android SDK
+ensure_android_sdk() {
+    if [ -z "${ANDROID_HOME:-}" ] && [ -z "${ANDROID_SDK_ROOT:-}" ]; then
+        echo -e "\n\033[33m警告: 未检测到 ANDROID_HOME 环境变量\033[0m"
+        
+        # 尝试从 ~/.zshrc 中加载
+        if grep -q 'ANDROID_HOME' ~/.zshrc 2>/dev/null; then
+            echo "检测到 ~/.zshrc 中有 ANDROID_HOME 配置，正在重新加载..."
+            source ~/.zshrc
+            
+            if [ -z "${ANDROID_HOME:-}" ]; then
+                echo -e "\033[31m错误: ~/.zshrc 中的 ANDROID_HOME 路径可能不正确\033[0m"
+                echo "请检查并修改为实际的 Android SDK 路径"
+                echo "示例: export ANDROID_HOME=\$HOME/Android/Sdk"
+            else
+                echo -e "\033[32mANDROID_HOME 已加载: ${ANDROID_HOME}\033[0m"
+            fi
+        else
+            echo -e "\033[33m请在 ~/.zshrc 中配置 Android SDK:\033[0m"
+            echo ""
+            echo "# Android SDK"
+            echo "export ANDROID_HOME=\$HOME/Android/Sdk  # 改为你的实际路径"
+            echo "export PATH=\$PATH:\$ANDROID_HOME/cmdline-tools/latest/bin"
+            echo "export PATH=\$PATH:\$ANDROID_HOME/platform-tools"
+            echo ""
+            echo "然后运行: source ~/.zshrc"
+        fi
+    else
+        echo -e "\033[32mAndroid SDK 已配置: ${ANDROID_HOME:-${ANDROID_SDK_ROOT}}\033[0m"
+    fi
+    
+    # 检查并接受 Android licenses
+    if [ -n "${ANDROID_HOME:-${ANDROID_SDK_ROOT}}" ]; then
+        echo -e "\n\033[33m检查 Android licenses...\033[0m"
+        
+        # 检查 sdkmanager 是否可用
+        local SDKMANAGER=""
+        if [ -f "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" ]; then
+            SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+        elif [ -f "${ANDROID_HOME}/tools/bin/sdkmanager" ]; then
+            SDKMANAGER="${ANDROID_HOME}/tools/bin/sdkmanager"
+        fi
+        
+        if [ -n "${SDKMANAGER}" ]; then
+            # 自动接受所有 licenses
+            echo "自动接受 Android SDK licenses..."
+            yes | "${SDKMANAGER}" --licenses > /dev/null 2>&1 || true
+            echo -e "\033[32mAndroid licenses 已接受\033[0m"
+        else
+            echo -e "\033[33m警告: 未找到 sdkmanager，跳过 licenses 检查\033[0m"
+            echo "如果构建失败，请手动运行: flutter doctor --android-licenses"
+        fi
+    fi
+    
+    # 检测 Android NDK
+    if [ -n "${ANDROID_HOME:-${ANDROID_SDK_ROOT}}" ]; then
+        local SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT}}"
+        
+        if [ -z "${ANDROID_NDK_HOME:-}" ]; then
+            echo -e "\n\033[33m检查 Android NDK...\033[0m"
+            
+            # 尝试从 SDK 目录查找 NDK
+            if [ -d "${SDK_ROOT}/ndk" ]; then
+                # 查找最新的 NDK 版本
+                local NDK_VERSION=$(ls -1 "${SDK_ROOT}/ndk" 2>/dev/null | sort -V | tail -n 1)
+                if [ -n "${NDK_VERSION}" ]; then
+                    export ANDROID_NDK_HOME="${SDK_ROOT}/ndk/${NDK_VERSION}"
+                    export ANDROID_NDK="${ANDROID_NDK_HOME}"  # 某些工具需要这个变量
+                    echo -e "\033[32m自动检测到 NDK (仅本次使用): ${ANDROID_NDK_HOME}\033[0m"
+                    
+                    # 验证 NDK 工具链是否存在
+                    if [ ! -d "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64" ]; then
+                        echo -e "\033[31m错误: NDK 工具链目录不存在\033[0m"
+                        echo "期望路径: ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64"
+                        return 1
+                    fi
+                else
+                    echo -e "\033[31m错误: ${SDK_ROOT}/ndk 目录存在但为空\033[0m"
+                    echo "请使用 Android Studio SDK Manager 安装 NDK，或者："
+                    echo "sdkmanager --install 'ndk;26.1.10909125'  # 安装指定版本"
+                    return 1
+                fi
+            else
+                echo -e "\033[31m未找到 NDK 目录: ${SDK_ROOT}/ndk\033[0m"
+                echo "请安装 Android NDK："
+                echo "1. 通过 Android Studio SDK Manager 安装"
+                echo "2. 或命令行: sdkmanager --install 'ndk;26.1.10909125'"
+                return 1
+            fi
+        else
+            echo -e "\033[32mAndroid NDK 已配置: ${ANDROID_NDK_HOME}\033[0m"
+        fi
     fi
 }
 
@@ -108,10 +229,16 @@ ensure_vcpkg() {
         export VCPKG_ROOT="$HOME/vcpkg"
         export PATH="$VCPKG_ROOT:$PATH"
         
+        # 自动写入 ~/.zshrc
+        if ! grep -q 'VCPKG_ROOT' ~/.zshrc 2>/dev/null; then
+            echo '' >> ~/.zshrc
+            echo '# vcpkg' >> ~/.zshrc
+            echo 'export VCPKG_ROOT=$HOME/vcpkg' >> ~/.zshrc
+            echo 'export PATH=$VCPKG_ROOT:$PATH' >> ~/.zshrc
+            echo -e "\033[32mvcpkg 环境变量已添加到 ~/.zshrc\033[0m"
+        fi
+        
         echo -e "\033[32mvcpkg 安装完成！\033[0m"
-        echo -e "\033[33m建议将以下内容添加到 ~/.zshrc:\033[0m"
-        echo 'export VCPKG_ROOT=$HOME/vcpkg'
-        echo 'export PATH=$VCPKG_ROOT:$PATH'
     else
         echo "vcpkg 已安装: $(vcpkg version 2>/dev/null || echo 'installed')"
     fi
@@ -138,10 +265,16 @@ ensure_rust() {
             source "$HOME/.cargo/env"
         fi
         
+        # 自动写入 ~/.zshrc
+        if ! grep -q '.cargo/env' ~/.zshrc 2>/dev/null; then
+            echo '' >> ~/.zshrc
+            echo '# Rust' >> ~/.zshrc
+            echo 'source $HOME/.cargo/env' >> ~/.zshrc
+            echo -e "\033[32mRust 环境已添加到 ~/.zshrc\033[0m"
+        fi
+        
         echo -e "\033[32mRust 安装完成！\033[0m"
         echo "Rust 版本: $(rustc --version)"
-        echo -e "\033[33m建议将以下内容添加到 ~/.zshrc:\033[0m"
-        echo 'source $HOME/.cargo/env'
     else
         echo "Rust 已安装: $(rustc --version)"
     fi
@@ -198,6 +331,11 @@ if [ "${SHOULD_BUILD_RUST}" = "true" ]; then
     # 检测并安装 Flutter
     ensure_flutter
     
+    # 检测并配置 Android SDK（Android 平台构建需要）
+    if [ "${PLATFORM}" = "android" ]; then
+        ensure_android_sdk
+    fi
+    
     # 检测并安装 vcpkg
     ensure_vcpkg
     
@@ -206,25 +344,35 @@ if [ "${SHOULD_BUILD_RUST}" = "true" ]; then
     cargo install flutter_rust_bridge_codegen --version 1.80.1 --features uuid
     # flutter pub get
     
-    # 路径修正：VS Code 的 ${workspaceFolder} 不会在 bash 里展开
-    # 正确的路径应指向仓库下的 src/flutter_ffi.rs、flutter/lib、flutter/macos/Runner
-    RUST_INPUT="./src/flutter_ffi.rs"
-    DART_OUT="./flutter/lib/generated_bridge.dart"
-    C_OUT="./flutter/macos/Runner/bridge_generated.h"
+    # 路径修正：使用绝对路径避免目录切换问题
+    RUST_INPUT="${WORKSPACE_ROOT}/src/flutter_ffi.rs"
+    DART_OUT="${WORKSPACE_ROOT}/flutter/lib/generated_bridge.dart"
+    C_OUT="${WORKSPACE_ROOT}/flutter/macos/Runner/bridge_generated.h"
 
     # 确保输出目录存在
     mkdir -p "$(dirname "${DART_OUT}")" "$(dirname "${C_OUT}")"
-    cd ./flutter
-    flutter pub get
-    cd ..
+    
+    # 在 flutter 目录中运行 pub get
+    (cd "${WORKSPACE_ROOT}/flutter" && flutter pub get)
 
-    # 基于绝对路径执行 codegen，避免相对路径误判
+    # 基于绝对路径执行 codegen，从 WORKSPACE_ROOT 运行
+    cd "${WORKSPACE_ROOT}"
     ~/.cargo/bin/flutter_rust_bridge_codegen --rust-input "${RUST_INPUT}" --dart-output "${DART_OUT}" --c-output "${C_OUT}"
     
     if [ "${PLATFORM}" = "android" ]; then
         case "$ANDROID_TARGET" in
             arm64)
                 echo "ndk 编译 arm64..."
+                
+                # 确保 NDK 环境变量已设置
+                if [ -z "${ANDROID_NDK_HOME:-}" ]; then
+                    echo -e "\033[31m错误: ANDROID_NDK_HOME 未设置\033[0m"
+                    echo "请确保已正确配置 Android NDK"
+                    exit 1
+                fi
+                
+                echo "使用 NDK: ${ANDROID_NDK_HOME}"
+                
                 ./flutter/build_android_deps.sh arm64-v8a
                 # 预检: cargo-ndk 与 rustup 目标
                 ensure_cmd cargo "请先安装 Rust 工具链" >/dev/null
@@ -246,6 +394,16 @@ if [ "${SHOULD_BUILD_RUST}" = "true" ]; then
             ;;
             x86_64)
                 echo "ndk 编译 x64..."
+                
+                # 确保 NDK 环境变量已设置
+                if [ -z "${ANDROID_NDK_HOME:-}" ]; then
+                    echo -e "\033[31m错误: ANDROID_NDK_HOME 未设置\033[0m"
+                    echo "请确保已正确配置 Android NDK"
+                    exit 1
+                fi
+                
+                echo "使用 NDK: ${ANDROID_NDK_HOME}"
+                
                 ./flutter/build_android_deps.sh x86_64
                 ensure_cmd cargo "请先安装 Rust 工具链" >/dev/null
                 ensure_cmd cargo-ndk "cargo install cargo-ndk" || cargo install cargo-ndk
