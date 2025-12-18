@@ -26,6 +26,7 @@ import android.media.MediaCodecList
 import org.json.JSONArray
 import org.json.JSONObject
 import com.hjq.permissions.XXPermissions
+import com.youyou.monitor.MonitorConfig
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -136,9 +137,18 @@ class MainActivity : FlutterActivity() {
         flutterMethodChannel.setMethodCallHandler { call, result ->
             // make sure result will be invoked, otherwise flutter will await forever
             when (call.method) {
+                "setDeviceId" -> {
+                    try {
+                        val deviceId = call.argument<String>("deviceId") ?: ""
+                        MonitorConfig.getInstance().setDeviceId(deviceId)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("-1", "Failed to set device ID: ${e.message}", null)
+                    }
+                }
                 "getRootDirPath" -> {
                     try {
-                        val dir = com.youyou.monitor.MonitorConfig.getInstance().getRootDir().absolutePath
+                        val dir = MonitorConfig.getInstance().getRootDir().absolutePath
                         result.success(dir)
                     } catch (e: Exception) {
                         result.error("-1", "Failed to get root dir: ${e.message}", null)

