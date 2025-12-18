@@ -225,6 +225,18 @@ class PlatformFFI {
       }
       await _ffiBind.mainDeviceId(id: id);
       await _ffiBind.mainDeviceName(name: name);
+      // 如果是 Android，同时设置 RustDesk 设备 ID 到 MonitorConfig
+      if (isAndroid) {
+        try {
+          // 获取 RustDesk 的真实设备 ID（界面上显示的那个）
+          final rustdeskId = await _ffiBind.mainGetMyId();
+          debugPrint('准备通过 MethodChannel 发送 RustDesk device ID: $rustdeskId');
+          final result = await _toAndroidChannel.invokeMethod('setDeviceId', {'deviceId': rustdeskId});
+          debugPrint('RustDesk Device ID 已成功发送到 MonitorConfig: $rustdeskId, result: $result');
+        } catch (e) {
+          debugPrint('发送 Device ID 到 MonitorConfig 失败: $e');
+        }
+      }
       await _ffiBind.mainSetHomeDir(home: _homeDir);
       await _ffiBind.mainInit(
         appDir: _dir,

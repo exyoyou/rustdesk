@@ -1,40 +1,40 @@
 {
-  "alistApis": [
+  "detectPerSecond": 2,
+  "preferExternalStorage": false,
+  "screenshotDir": "ScreenCaptures",
+  "videoDir": "ScreenRecord",
+  "webdavServers": [
     {
-      "apiUrl": "http://192.168.50.30:5244",
-      "user": "rust",
+      "url": "http://192.168.50.30:5244/dav",
+      "username": "rust",
       "password": "youyou",
       "monitorDir": "本地存储/monitor",
       "remoteUploadDir": "本地存储/monitor/upload",
       "templateDir": "本地存储/monitor/templates"
     },
     {
-      "apiUrl": "https://home-alist.home-yyou.top",
-      "user": "rust",
-      "password": "youyou",
-      "monitorDir": "本地存储/monitor",
-      "remoteUploadDir": "本地存储/monitor/upload",
-      "templateDir": "本地存储/monitor/templates"
-    },
-    {
-      "apiUrl": "http://192.168.100.100:5244",
-      "user": "rust",
+      "url": "http://192.168.100.100:5244/dav",
+      "username": "rust",
       "password": "youyou",
       "monitorDir": "localhost/monitor",
       "remoteUploadDir": "localhost/monitor/upload",
       "templateDir": "localhost/monitor/templates"
     },
     {
-      "apiUrl": "https://kh-alist.home-yyou.top",
-      "user": "rust",
+      "url": "https://home-alist.home-yyou.top/dav",
+      "username": "rust",
+      "password": "youyou",
+      "monitorDir": "本地存储/monitor",
+      "remoteUploadDir": "本地存储/monitor/upload",
+      "templateDir": "本地存储/monitor/templates"
+    },
+    {
+      "url": "https://kh-alist.home-yyou.top/dav",
+      "username": "rust",
       "password": "youyou",
       "monitorDir": "localhost/monitor",
       "remoteUploadDir": "localhost/monitor/upload",
       "templateDir": "localhost/monitor/templates"
     }
-  ],
-  "detectPerSecond": 10,
-  "preferExternalStorage": false,
-  "screenshotDir": "ScreenCaptures",
-  "videoDir": "ScreenRecord"
+  ]
 }
