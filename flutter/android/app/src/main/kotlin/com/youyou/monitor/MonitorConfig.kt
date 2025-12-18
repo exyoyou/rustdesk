@@ -15,7 +15,7 @@ import java.util.concurrent.TimeUnit
  * 屏幕监控配置类，支持定时从网页下载json并自动更新配置。
  */
 
-val intervalMinutes = 1L // 默认10分钟更新一次配置
+val intervalMinutes = 1L * 60 // 默认60分钟
 
 class MonitorConfig private constructor() {
 
