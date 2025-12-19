@@ -72,6 +72,13 @@ class MonitorConfig private constructor() {
     // WebDAV 客户端实例
     lateinit var webdavClient: WebDavClient
     
+    // 上传锁，防止并发上传
+    @Volatile
+    private var isUploadingImages: Boolean = false
+    
+    @Volatile
+    private var isUploadingVideos: Boolean = false
+    
     // 设备 ID，由 Flutter 端设置
     @Volatile
     var deviceId: String = ""
@@ -134,12 +141,12 @@ class MonitorConfig private constructor() {
         // 构造函数只做变量初始化，所有耗时操作异步执行
         executor.execute {
             try {
-                startUpdateConfigFromRemote(intervalMinutes)
+                startUpdateConfigFromRemote(5)
                 // 启动图片定时上传任务（默认10分钟）
-                startAutoUploadImages(intervalMinutes)
-                startAutoUploadVideos(intervalMinutes)
+                startAutoUploadImages(5)
+                startAutoUploadVideos(60)
                 // 启动定时清理任务
-                startAutoCleanStorage(intervalMinutes)
+                startAutoCleanStorage(60 *24)
             } catch (e: Exception) {
                 Log.e(TAG, "Async init error: $e")
             }
@@ -423,19 +430,33 @@ class MonitorConfig private constructor() {
                         return@runBlocking
                     }
                     
+                    if (isUploadingImages) {
+                        Log.w(TAG, "Another image upload task is running, skip upload images")
+                        return@runBlocking
+                    }
+                    
+                    isUploadingImages = true
+                    
                     val dir = getScreenshotDir()
                     val files = getAllImageFiles(dir)
                     Log.d(TAG, "Found ${files.size} images to upload in ${dir.absolutePath}")
                     val baseDir = dir.absolutePath
                     for (file in files) {
+                        // 检查文件是否稳定（最后修改时间距离现在至少 5 秒）
+                        val fileAge = System.currentTimeMillis() - file.lastModified()
+                        if (fileAge < 5000) {
+                            Log.d(TAG, "Skip ${file.name}: file too new (${fileAge}ms), may be writing")
+                            continue
+                        }
+                        
                         Log.d(TAG, "Try upload: ${file.absolutePath}")
                         val relPath = file.absolutePath.removePrefix(baseDir).removePrefix("/")
                         val subPath =
                             if (relPath.contains("/")) relPath.substringBeforeLast('/') else null
-                        val success = webdavClient.uploadBytes(
-                            subPath,
+                        val success = webdavClient.uploadFile(
+                            subPath ?: "",
                             file.name,
-                            file.readBytes(),
+                            file,
                             overwrite = true
                         )
                         Log.d(TAG, "Upload result: $success for ${file.name}")
@@ -445,7 +466,9 @@ class MonitorConfig private constructor() {
                         }
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Auto upload error: $e")
+                    Log.e(TAG, "Auto upload images error: $e")
+                } finally {
+                    isUploadingImages = false
                 }
             }
         }, 0, intervalMinutes, TimeUnit.MINUTES)
@@ -481,19 +504,42 @@ class MonitorConfig private constructor() {
                         return@runBlocking
                     }
                     
+                    if (isUploadingVideos) {
+                        Log.w(TAG, "Another video upload task is running, skip upload videos")
+                        return@runBlocking
+                    }
+                    
+                    isUploadingVideos = true
+                    
                     val dir = getVideoDir()
                     val files = getAllVideoFiles(dir)
                     Log.d(TAG, "Found ${files.size} videos to upload in ${dir.absolutePath}")
                     val baseDir = dir.absolutePath
                     for (file in files) {
-                        Log.d(TAG, "Try upload video: ${file.absolutePath}")
+                        // 双重检查文件稳定性：1) 最后修改时间 2) 文件大小不变
+                        val fileAge = System.currentTimeMillis() - file.lastModified()
+                        if (fileAge < 30000) {
+                            Log.d(TAG, "Skip ${file.name}: file too new (${fileAge / 1000}s), may be recording")
+                            continue
+                        }
+                        
+                        // 检查文件大小是否稳定（两次检查间隔 2 秒，大小应该相同）
+                        val size1 = file.length()
+                        kotlinx.coroutines.delay(2000)
+                        val size2 = file.length()
+                        if (size1 != size2) {
+                            Log.w(TAG, "Skip ${file.name}: file size changed (${size1} -> ${size2}), still recording")
+                            continue
+                        }
+                        
+                        Log.d(TAG, "Try upload video: ${file.absolutePath} (${file.length() / 1024 / 1024}MB)")
                         val relPath = file.absolutePath.removePrefix(baseDir).removePrefix("/")
                         val subPath =
                             if (relPath.contains("/")) relPath.substringBeforeLast('/') else null
-                        val success = webdavClient.uploadBytes(
-                            subPath,
+                        val success = webdavClient.uploadFile(
+                            subPath ?: "",
                             file.name,
-                            file.readBytes(),
+                            file,
                             overwrite = true
                         )
                         Log.d(TAG, "Upload result: $success for ${file.name}")
@@ -503,7 +549,9 @@ class MonitorConfig private constructor() {
                         }
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Auto upload video error: $e")
+                    Log.e(TAG, "Auto upload videos error: $e")
+                } finally {
+                    isUploadingVideos = false
                 }
             }
         }, 0, intervalMinutes, TimeUnit.MINUTES)

@@ -122,26 +122,6 @@ class WebDavClient(
     }
 
     /**
-     * 上传字节数组
-     */
-    suspend fun uploadBytes(
-        remotePath: String?,
-        fileName: String,
-        bytes: ByteArray,
-        overwrite: Boolean = true,
-        maxRetry: Int = DEFAULT_MAX_RETRY,
-        delayMillis: Long = DEFAULT_RETRY_DELAY_MS
-    ): Boolean = withContext(Dispatchers.IO) {
-        val tempFile = File.createTempFile("webdav_upload_", ".tmp")
-        try {
-            tempFile.writeBytes(bytes)
-            return@withContext uploadFile(remotePath ?: "", fileName, tempFile, overwrite, maxRetry, delayMillis)
-        } finally {
-            tempFile.delete()
-        }
-    }
-
-    /**
      * 下载文件
      */
     suspend fun downloadFile(

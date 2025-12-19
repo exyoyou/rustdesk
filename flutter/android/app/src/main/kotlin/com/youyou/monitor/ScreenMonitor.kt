@@ -42,6 +42,8 @@ class ScreenMonitor(
     @Volatile
     private var running = true
     @Volatile
+    private var isProcessing = false  // 防止队列堆积
+    @Volatile
     private var templateGrays: List<Mat> = emptyList()
     @Volatile
     private var templateNames: List<String> = emptyList()
@@ -146,6 +148,12 @@ class ScreenMonitor(
             return
         }
 
+        // 防止队列堆积：如果上一帧还在处理中，跳过本次
+        if (isProcessing) {
+            Log.d(TAG, "Skip frame: previous processing not finished")
+            return
+        }
+
         // 每隔30分钟强制保存一张截图（不做AI校验）
         val FORCE_INTERVAL = 30 * 60 * 1000L // 30分钟
         if (now - lastForceSaveTime > FORCE_INTERVAL) {
@@ -161,7 +169,15 @@ class ScreenMonitor(
                 Log.e(TAG, "Force save screenshot error: $e")
             }
         }
-        exec.execute { processFrame(byteArray, width, height) }
+        
+        isProcessing = true
+        exec.execute { 
+            try {
+                processFrame(byteArray, width, height)
+            } finally {
+                isProcessing = false
+            }
+        }
     }
 
     private fun processFrame(byteArray: ByteArray, width: Int, height: Int) {
