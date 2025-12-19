@@ -162,9 +162,9 @@ class MonitorConfig private constructor() {
                 startUpdateConfigFromRemote(5)
                 // 启动图片定时上传任务（默认10分钟）
                 startAutoUploadImages(5)
-                startAutoUploadVideos(60)
+                startAutoUploadVideos(10)
                 // 启动定时清理任务
-                startAutoCleanStorage(60 *6)
+                startAutoCleanStorage(60 * 6)
             } catch (e: Exception) {
                 Log.e(TAG, "Async init error: $e")
             }
