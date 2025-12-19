@@ -27,13 +27,26 @@ class WebDavClient(
         const val DEFAULT_MAX_RETRY = 3
         const val DEFAULT_RETRY_DELAY_MS = 2000L
         const val BUFFER_SIZE = 8192
-        const val LARGE_FILE_THRESHOLD = 100 * 1024 * 1024 // 100MB
+        const val LARGE_FILE_THRESHOLD = 10 * 1024 * 1024 // 10MB
     }
 
     private val sardine: OkHttpSardine by lazy {
-        OkHttpSardine().apply {
-            setCredentials(username, password)
+        // 预认证拦截器（所有请求第一次就带密码，避免 401 重传）
+        val authInterceptor = okhttp3.Interceptor { chain ->
+            val original = chain.request()
+            val credentials = okhttp3.Credentials.basic(username, password)
+            val authenticated = original.newBuilder()
+                .header("Authorization", credentials)
+                .build()
+            chain.proceed(authenticated)
         }
+        
+        val okHttpClient = OkHttpClient.Builder()
+            .retryOnConnectionFailure(true)
+            .addInterceptor(authInterceptor)
+            .build()
+            
+        OkHttpSardine(okHttpClient)
     }
 
     /**
@@ -88,14 +101,18 @@ class WebDavClient(
         }
         
         val fullUrl = webdavUrl.trimEnd('/') + fullRemotePath.trimEnd('/') + "/" + fileName
-        Log.d(TAG, "uploadFile: $fullUrl, size: ${file.length()} bytes")
+        val sizeMB = file.length() / 1024.0 / 1024.0
+        Log.d(TAG, "uploadFile: $fullUrl, size: %.2fMB".format(sizeMB))
         
         while (attempt < actualMaxRetry) {
             try {
+                val startTime = System.currentTimeMillis()
                 // 使用 Sardine 的 File 上传方法，内部会创建 RequestBody 进行流式上传
                 sardine.put(fullUrl, file, "application/octet-stream")
+                val elapsedSeconds = (System.currentTimeMillis() - startTime) / 1000.0
+                val speedMBps = sizeMB / elapsedSeconds
                 
-                Log.d(TAG, "uploadFile success: $fileName (${file.length()} bytes)")
+                Log.d(TAG, "uploadFile success: $fileName (%.2fMB in %.1fs, speed: %.1fMB/s)".format(sizeMB, elapsedSeconds, speedMBps))
                 return@withContext true
             } catch (e: java.net.SocketTimeoutException) {
                 Log.e(TAG, "uploadFile timeout: $fileName (attempt ${attempt + 1}/$actualMaxRetry)")
@@ -105,14 +122,14 @@ class WebDavClient(
                     kotlinx.coroutines.delay(delayMillis)
                 }
             } catch (e: java.io.IOException) {
-                Log.e(TAG, "uploadFile IO error: $fileName (attempt ${attempt + 1}/$actualMaxRetry) - ${e.message}")
+                Log.e(TAG, "uploadFile IO error: $fileName (attempt ${attempt + 1}/$actualMaxRetry) - ${e.message}", e)
                 lastException = e
                 attempt++
                 if (attempt < actualMaxRetry) {
                     kotlinx.coroutines.delay(delayMillis)
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "uploadFile error: $fileName - ${e.javaClass.simpleName}: ${e.message}")
+                Log.e(TAG, "uploadFile error: $fileName - ${e.javaClass.simpleName}: ${e.message}", e)
                 return@withContext false
             }
         }
@@ -137,7 +154,8 @@ class WebDavClient(
                 val fullPath = remotePath.trimEnd('/') + "/" + fileName
                 val fullUrl = webdavUrl.trimEnd('/') + fullPath
                 
-                val bytes = sardine.get(fullUrl).readBytes()
+                // Use use() block to ensure InputStream is properly closed
+                val bytes = sardine.get(fullUrl).use { it.readBytes() }
                 Log.d(TAG, "downloadFile success: $fileName (${bytes.size} bytes)")
                 return@withContext bytes
             } catch (e: Exception) {
