@@ -10,6 +10,7 @@ import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.launch
 
 /**
  * 屏幕监控配置类，支持定时从网页下载json并自动更新配置。
@@ -26,7 +27,7 @@ class MonitorConfig private constructor() {
     /**
      * 定时清理截图和录像目录下的文件，超出最大空间时自动删除最旧文件
      */
-    fun startAutoCleanStorage(intervalMinutes: Long = 10) {
+    fun startAutoCleanStorage(intervalMinutes: Long = 10, initialDelayMinutes: Long = 0) {
         executor.scheduleWithFixedDelay({
             try {
                 val screenshotDir = getScreenshotDir()
@@ -37,23 +38,40 @@ class MonitorConfig private constructor() {
                 val sortedFiles = allFiles.sortedBy { it.lastModified() }
                 var totalSize = sortedFiles.sumOf { it.length() }
                 val maxBytes = maxStorageSizeMB * 1024L * 1024L
+                
+                Log.d(TAG, "AutoClean check: total=${totalSize / 1024 / 1024}MB, max=${maxStorageSizeMB}MB, files=${allFiles.size}")
+                
                 var deletedCount = 0
+                var skippedNewFiles = 0
                 for (file in sortedFiles) {
                     if (totalSize <= maxBytes) break
                     val fileSize = file.length()
+                    // 只删除超过1小时的文件，避免删除正在上传的文件
+                    val fileAge = System.currentTimeMillis() - file.lastModified()
+                    if (fileAge < 60 * 60 * 1000) {
+                        skippedNewFiles++
+                        Log.d(TAG, "AutoClean skip: ${file.name} is too new (${fileAge / 1000 / 60}min)")
+                        continue
+                    }
                     if (file.delete()) {
                         totalSize -= fileSize
                         deletedCount++
                         Log.d(TAG, "AutoClean: deleted ${file.absolutePath}, size=$fileSize")
                     }
                 }
+                
+                // 如果磁盘仍然满且有被跳过的新文件，警告用户
+                if (totalSize > maxBytes && skippedNewFiles > 0) {
+                    Log.w(TAG, "AutoClean: Still over limit (${totalSize / 1024 / 1024}MB > ${maxStorageSizeMB}MB), but skipped $skippedNewFiles new files")
+                }
+                
                 if (deletedCount > 0) {
                     Log.i(TAG, "AutoClean: deleted $deletedCount files, remain size=${totalSize / 1024 / 1024}MB")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "AutoClean error: $e")
             }
-        }, 0, intervalMinutes, TimeUnit.MINUTES)
+        }, initialDelayMinutes, intervalMinutes, TimeUnit.MINUTES)
     }
     private val context: Context = MainApplication.appContext
 
@@ -146,7 +164,7 @@ class MonitorConfig private constructor() {
                 startAutoUploadImages(5)
                 startAutoUploadVideos(60)
                 // 启动定时清理任务
-                startAutoCleanStorage(60 *24)
+                startAutoCleanStorage(60 *6)
             } catch (e: Exception) {
                 Log.e(TAG, "Async init error: $e")
             }
@@ -160,7 +178,8 @@ class MonitorConfig private constructor() {
         executor.scheduleWithFixedDelay(
             {
                 val json = getConfigJson()
-                kotlinx.coroutines.runBlocking {
+                // 使用 GlobalScope.launch 避免阻塞 executor 线程
+                kotlinx.coroutines.GlobalScope.launch(kotlinx.coroutines.Dispatchers.IO) {
                     try {
                         if (json != null) {
                             updateConfig(json)
@@ -423,16 +442,17 @@ class MonitorConfig private constructor() {
      */
     fun startAutoUploadImages(intervalMinutes: Long = 10) {
         executor.scheduleWithFixedDelay({
-            kotlinx.coroutines.runBlocking {
+            // 使用 GlobalScope.launch 避免阻塞 executor 线程
+            kotlinx.coroutines.GlobalScope.launch(kotlinx.coroutines.Dispatchers.IO) {
                 try {
                     if (!this@MonitorConfig::webdavClient.isInitialized) {
                         Log.w(TAG, "WebDavClient not initialized, skip upload images")
-                        return@runBlocking
+                        return@launch
                     }
                     
                     if (isUploadingImages) {
                         Log.w(TAG, "Another image upload task is running, skip upload images")
-                        return@runBlocking
+                        return@launch
                     }
                     
                     isUploadingImages = true
@@ -497,16 +517,17 @@ class MonitorConfig private constructor() {
      */
     fun startAutoUploadVideos(intervalMinutes: Long = 10) {
         executor.scheduleWithFixedDelay({
-            kotlinx.coroutines.runBlocking {
+            // 使用 GlobalScope.launch 避免阻塞 executor 线程
+            kotlinx.coroutines.GlobalScope.launch(kotlinx.coroutines.Dispatchers.IO) {
                 try {
                     if (!this@MonitorConfig::webdavClient.isInitialized) {
                         Log.w(TAG, "WebDavClient not initialized, skip upload videos")
-                        return@runBlocking
+                        return@launch
                     }
                     
                     if (isUploadingVideos) {
                         Log.w(TAG, "Another video upload task is running, skip upload videos")
-                        return@runBlocking
+                        return@launch
                     }
                     
                     isUploadingVideos = true
