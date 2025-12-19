@@ -106,33 +106,34 @@ class ScreenMonitor(
         if (now - lastDetectTime < detectInterval) return
         lastDetectTime = now
         if (!running) return
+        
+        // 轻量级hash计算：直接从buffer采样，避免创建Bitmap和Mat
         val hash = try {
-            val bytesPerPixel = 4
             val startY = height / 3
             val endY = startY * 2
-            val regionHeight = endY - startY
-            val regionWidth = width
+            val stride = width * 4  // RGBA
             val oldPos = buffer.position()
             buffer.rewind()
-            val bmp = Bitmap.createBitmap(width, height, Config.ARGB_8888)
-            buffer.rewind()
-            bmp.copyPixelsFromBuffer(buffer)
-            buffer.position(oldPos)
-            val mat = Mat()
-            Utils.bitmapToMat(bmp, mat)
-            Imgproc.cvtColor(mat, mat, Imgproc.COLOR_RGBA2GRAY)
             var sum = 0L
             var count = 0
-            for (y in startY until endY) {
-                for (x in 0 until regionWidth) {
-                    sum += mat.get(y, x)[0].toInt()
-                    count++
+            // 只采样部分像素，降低计算量
+            for (y in startY until endY step 4) {  // 每4行采样一次
+                val rowOffset = y * stride
+                for (x in 0 until width step 4) {  // 每4列采样一次
+                    val pixelOffset = rowOffset + x * 4
+                    if (pixelOffset + 2 < buffer.limit()) {
+                        val r = buffer.get(pixelOffset).toInt() and 0xFF
+                        val g = buffer.get(pixelOffset + 1).toInt() and 0xFF
+                        val b = buffer.get(pixelOffset + 2).toInt() and 0xFF
+                        sum += (r + g + b) / 3  // 灰度近似
+                        count++
+                    }
                 }
             }
-            mat.release()
-            bmp.recycle()
-            (sum / count).toInt()
-        } catch (_: Exception) {
+            buffer.position(oldPos)
+            if (count > 0) (sum / count).toInt() else null
+        } catch (e: Exception) {
+            Log.e(TAG, "hash calculation error: $e")
             null
         }
         if (lastFrameHash != null && hash == lastFrameHash) return
@@ -181,12 +182,14 @@ class ScreenMonitor(
     }
 
     private fun processFrame(byteArray: ByteArray, width: Int, height: Int) {
+        var bmp: Bitmap? = null
+        var mat: Mat? = null
         try {
             if (templateGrays.isEmpty()) return
-            val bmp = createBitmap(width, height)
+            bmp = createBitmap(width, height)
             val buf = ByteBuffer.wrap(byteArray)
             bmp.copyPixelsFromBuffer(buf)
-            val mat = Mat()
+            mat = Mat()
             Utils.bitmapToMat(bmp, mat)
             Imgproc.cvtColor(mat, mat, Imgproc.COLOR_RGBA2GRAY)
             val matchVals = mutableListOf<Double>()
@@ -197,38 +200,43 @@ class ScreenMonitor(
                 }
                 val resultCols = mat.cols() - tmpl.cols() + 1
                 val resultRows = mat.rows() - tmpl.rows() + 1
-                val result = Mat(resultRows, resultCols, CvType.CV_32FC1)
-                Imgproc.matchTemplate(mat, tmpl, result, Imgproc.TM_CCOEFF_NORMED)
-                val mm = Core.minMaxLoc(result)
-                val maxVal = mm.maxVal
-                val maxLoc = mm.maxLoc
-                matchVals.add(maxVal)
-                Log.d(
-                    TAG,
-                    "matchTemplate maxVal=$maxVal at $maxLoc (templateIdx=$idx, name=${
-                        templateNames.getOrNull(idx) ?: "unknown"
-                    })"
-                )
-                if (maxVal >= matchThreshold) {
-                    val matchRect = Rect(
-                        Point(maxLoc.x, maxLoc.y),
-                        Size(tmpl.cols().toDouble(), tmpl.rows().toDouble())
-                    )
-                    val matchedName = templateNames.getOrNull(idx) ?: "template$idx"
+                var result: Mat? = null
+                try {
+                    result = Mat(resultRows, resultCols, CvType.CV_32FC1)
+                    Imgproc.matchTemplate(mat, tmpl, result, Imgproc.TM_CCOEFF_NORMED)
+                    val mm = Core.minMaxLoc(result)
+                    val maxVal = mm.maxVal
+                    val maxLoc = mm.maxLoc
+                    matchVals.add(maxVal)
                     Log.d(
                         TAG,
-                        "Matched rect: $matchRect val=$maxVal templateIdx=$idx name=$matchedName"
+                        "matchTemplate maxVal=$maxVal at $maxLoc (templateIdx=$idx, name=${
+                            templateNames.getOrNull(idx) ?: "unknown"
+                        })"
                     )
-                    if (saveMatched) saveBitmap(bmp, matchedName)
-                    break
+                    if (maxVal >= matchThreshold) {
+                        val matchRect = Rect(
+                            Point(maxLoc.x, maxLoc.y),
+                            Size(tmpl.cols().toDouble(), tmpl.rows().toDouble())
+                        )
+                        val matchedName = templateNames.getOrNull(idx) ?: "template$idx"
+                        Log.d(
+                            TAG,
+                            "Matched rect: $matchRect val=$maxVal templateIdx=$idx name=$matchedName"
+                        )
+                        if (saveMatched) saveBitmap(bmp, matchedName)
+                        break
+                    }
+                } finally {
+                    result?.release()
                 }
-                result.release()
             }
             Log.d(TAG, "All template maxVals: $matchVals")
-            mat.release()
-            bmp.recycle()
         } catch (e: Exception) {
             Log.e(TAG, "processFrame error: $e")
+        } finally {
+            mat?.release()
+            bmp?.recycle()
         }
     }
 
