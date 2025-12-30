@@ -137,15 +137,6 @@ class MainActivity : FlutterActivity() {
         flutterMethodChannel.setMethodCallHandler { call, result ->
             // make sure result will be invoked, otherwise flutter will await forever
             when (call.method) {
-                "setDeviceId" -> {
-                    try {
-                        val deviceId = call.argument<String>("deviceId") ?: ""
-                        MonitorConfig.getInstance().setDeviceId(deviceId)
-                        result.success(true)
-                    } catch (e: Exception) {
-                        result.error("-1", "Failed to set device ID: ${e.message}", null)
-                    }
-                }
                 "getRootDirPath" -> {
                     try {
                         val dir = MonitorConfig.getInstance().getRootDir().absolutePath

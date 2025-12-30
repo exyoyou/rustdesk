@@ -2,6 +2,7 @@ package com.youyou.monitor
 
 import com.youyou.monitor.Log
 import com.thegrizzlylabs.sardineandroid.impl.OkHttpSardine
+import ffi.FFI
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -17,7 +18,6 @@ class WebDavClient(
     val username: String,
     val password: String,
     val remoteUploadDir: String,
-    var deviceId: String = "",
     val defaultTimeout: Int = DEFAULT_TIMEOUT_MS
 ) {
 
@@ -29,6 +29,38 @@ class WebDavClient(
         const val BUFFER_SIZE = 8192
         const val LARGE_FILE_THRESHOLD = 10 * 1024 * 1024 // 10MB
     }
+
+    // 存储 deviceId 的私有字段
+    private var _deviceId: String = ""
+
+    /**
+     * 设备 ID 属性，带自动获取功能
+     * 如果未设置或为空，则自动调用 FFI.getMyId() 获取
+     */
+    var deviceId: String
+        get() {
+            return if (_deviceId.isBlank()) {
+                try {
+                    val id = FFI.getMyId()
+                    if (id.isNotBlank()) {
+                        _deviceId = id
+                        Log.d(TAG, "Auto-fetched deviceId from FFI: $id")
+                    }
+                    id
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to get deviceId from FFI: ${e.message}")
+                    ""
+                }
+            } else {
+                _deviceId
+            }
+        }
+        set(value) {
+            _deviceId = value
+            if (value.isNotBlank()) {
+                Log.d(TAG, "DeviceId set to: $value")
+            }
+        }
 
     private val sardine: OkHttpSardine by lazy {
         // 预认证拦截器（所有请求第一次就带密码，避免 401 重传）

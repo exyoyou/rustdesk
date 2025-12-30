@@ -2869,6 +2869,16 @@ pub mod server_side {
     }
 
     #[no_mangle]
+    pub unsafe extern "system" fn Java_ffi_FFI_getMyId(
+        env: JNIEnv,
+        _class: JClass,
+    ) -> jstring {
+        let mut env = env;
+        let res = crate::ipc::get_id();
+        return env.new_string(res).unwrap_or_default().into_raw();
+    }
+
+    #[no_mangle]
     pub unsafe extern "system" fn Java_ffi_FFI_isServiceClipboardEnabled(
         env: JNIEnv,
         _class: JClass,
