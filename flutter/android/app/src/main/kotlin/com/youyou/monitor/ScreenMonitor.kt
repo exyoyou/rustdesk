@@ -10,6 +10,7 @@ import org.opencv.android.Utils
 import org.opencv.core.Core
 import org.opencv.core.CvType
 import org.opencv.core.Mat
+import org.opencv.core.MatOfDouble
 import org.opencv.core.Point
 import org.opencv.core.Rect
 import org.opencv.core.Size
@@ -36,8 +37,6 @@ class ScreenMonitor(
     private val config = MonitorConfig.getInstance()
     @Volatile
     private var lastDetectTime: Long = 0L
-    @Volatile
-    private var lastFrameHash: Int? = null
     private val exec: ExecutorService = Executors.newSingleThreadExecutor()
     @Volatile
     private var running = true
@@ -82,13 +81,20 @@ class ScreenMonitor(
                 Utils.bitmapToMat(bmp, tmp)
                 Imgproc.cvtColor(tmp, tmp, Imgproc.COLOR_RGBA2GRAY)
                 tmp
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to convert bitmap to Mat: $e")
                 null
             }
         }
+        
+        // 释放旧的模板Mat对象
         templateGrays.forEach { it.release() }
         templateGrays = newTemplateGrays
         templateNames = names
+        
+        // 重要：回收所有Bitmap，防止内存泄漏
+        bitmaps.forEach { it.recycle() }
+        
         Log.d(TAG, "Loaded ${templateGrays.size} templates from preferred directory: $templateNames")
     }
 
@@ -96,105 +102,140 @@ class ScreenMonitor(
         loadTemplates()
     }
 
-    // 上次强制保存截图的时间戳
-    @Volatile
-    private var lastForceSaveTime: Long = 0L
+    @Volatile private var lastForceSaveTime: Long = 0L
+    @Volatile private var lastFrameSignature: Long = 0L  // 使用更精确的帧签名
+    
+    // 性能优化：SimpleDateFormat 创建开销大，复用实例（线程不安全，仅在单线程 executor 中使用）
+    private val dateFormat = SimpleDateFormat("yyyyMMdd", Locale.US)
+    private val timestampFormat = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
 
+    /**
+     * 帧回调入口 - 高性能设计
+     * 1. 快速频率限制
+     * 2. 轻量级帧去重（避免重复处理相同画面）
+     * 3. 异步处理，不阻塞视频流
+     * 
+     * 性能优化：
+     * - 使用绝对位置访问ByteBuffer，无需rewind()
+     * - 预分配采样点数组，减少GC
+     * - 只在必要时复制buffer数据
+     */
     fun onFrameAvailable(buffer: ByteBuffer, width: Int, height: Int) {
+        // 1. 频率限制
         val now = System.currentTimeMillis()
-        val detectInterval = if (config.detectPerSecond > 0) 1000 / config.detectPerSecond else 500
-        if (now - lastDetectTime < detectInterval) return
+        val interval = if (config.detectPerSecond > 0) 1000 / config.detectPerSecond else 500
+        if (now - lastDetectTime < interval || !running) return
         lastDetectTime = now
-        if (!running) return
         
-        // 轻量级hash计算：直接从buffer采样，避免创建Bitmap和Mat
-        val hash = try {
-            val startY = height / 3
-            val endY = startY * 2
-            val stride = width * 4  // RGBA
-            val oldPos = buffer.position()
-            buffer.rewind()
-            var sum = 0L
-            var count = 0
-            // 只采样部分像素，降低计算量
-            for (y in startY until endY step 4) {  // 每4行采样一次
-                val rowOffset = y * stride
-                for (x in 0 until width step 4) {  // 每4列采样一次
-                    val pixelOffset = rowOffset + x * 4
-                    if (pixelOffset + 2 < buffer.limit()) {
-                        val r = buffer.get(pixelOffset).toInt() and 0xFF
-                        val g = buffer.get(pixelOffset + 1).toInt() and 0xFF
-                        val b = buffer.get(pixelOffset + 2).toInt() and 0xFF
-                        sum += (r + g + b) / 3  // 灰度近似
-                        count++
-                    }
+        // 2. 快速帧签名计算（采样9个点：四角+四边中点+中心）
+        // 使用绝对索引访问，不改变buffer的position状态
+        val signature = try {
+            val stride = width * 4
+            val halfWidth = width / 2
+            val halfHeight = height / 2
+            val lastRow = height - 1
+            val lastCol = width - 1
+            
+            var sig = 0L
+            // 按顺序计算9个采样点：上(左中右) 中(左中右) 下(左中右)
+            val pixels = intArrayOf(
+                0, halfWidth, lastCol,                          // 上排
+                halfHeight * width, halfHeight * width + halfWidth, halfHeight * width + lastCol,  // 中排
+                lastRow * width, lastRow * width + halfWidth, lastRow * width + lastCol  // 下排
+            )
+            
+            for (i in pixels.indices) {
+                val offset = pixels[i] * 4
+                if (offset + 2 < buffer.capacity()) {
+                    val r = buffer.get(offset).toInt() and 0xFF
+                    val g = buffer.get(offset + 1).toInt() and 0xFF
+                    val b = buffer.get(offset + 2).toInt() and 0xFF
+                    val gray = (r + g + b) / 3
+                    sig = sig or (gray.toLong() shl (i * 7))  // 每个点7bit
                 }
             }
-            buffer.position(oldPos)
-            if (count > 0) (sum / count).toInt() else null
+            sig
         } catch (e: Exception) {
-            Log.e(TAG, "hash calculation error: $e")
-            null
-        }
-        if (lastFrameHash != null && hash == lastFrameHash) return
-        lastFrameHash = hash
-        // 安全拷贝 buffer 内容到 ByteArray，异常时丢弃本帧
-        val byteArray = try {
-            val arr = ByteArray(buffer.remaining())
-            buffer.rewind()
-            buffer.get(arr)
-            arr
-        } catch (e: Exception) {
-            Log.e(TAG, "buffer copy error: $e")
+            Log.e(TAG, "Signature calculation failed: $e")
             return
-        }
-
-        // 防止队列堆积：如果上一帧还在处理中，跳过本次
-        if (isProcessing) {
-            Log.d(TAG, "Skip frame: previous processing not finished")
-            return
-        }
-
-        // 每隔30分钟强制保存一张截图（不做AI校验）
-        val FORCE_INTERVAL = 30 * 60 * 1000L // 30分钟
-        if (now - lastForceSaveTime > FORCE_INTERVAL) {
-            lastForceSaveTime = now
-            try {
-                val bmp = createBitmap(width, height)
-                val buf = ByteBuffer.wrap(byteArray)
-                bmp.copyPixelsFromBuffer(buf)
-                saveBitmap(bmp, "forced")
-                bmp.recycle()
-                Log.d(TAG, "Force saved screenshot at ${Date(now)}")
-            } catch (e: Exception) {
-                Log.e(TAG, "Force save screenshot error: $e")
-            }
         }
         
+        // 3. 帧去重：签名相同则跳过
+        if (signature == lastFrameSignature) return
+        lastFrameSignature = signature
+        
+        // 4. 防止队列堆积
+        if (isProcessing) return
+        
+        // 5. 复制帧数据（使用capacity确保完整复制）
+        val frameData = try {
+            val expectedSize = width * height * 4
+            val actualSize = buffer.capacity()
+            if (actualSize < expectedSize) {
+                Log.e(TAG, "Buffer too small: expected=$expectedSize, actual=$actualSize")
+                return
+            }
+            val arr = ByteArray(expectedSize)
+            buffer.position(0)  // 重置到起始位置
+            buffer.get(arr, 0, expectedSize)
+            arr
+        } catch (e: Exception) {
+            Log.e(TAG, "Buffer copy failed: $e")
+            return
+        }
+        
+        // 6. 异步处理
         isProcessing = true
-        exec.execute { 
+        exec.execute {
             try {
-                processFrame(byteArray, width, height)
+                processFrame(frameData, width, height, now)
             } finally {
                 isProcessing = false
             }
         }
     }
 
-    private fun processFrame(byteArray: ByteArray, width: Int, height: Int) {
+    /**
+     * 异步帧处理
+     * 1. 模板匹配
+     * 2. 定期强制保存（带图像质量检测）
+     */
+    private fun processFrame(byteArray: ByteArray, width: Int, height: Int, now: Long) {
         var bmp: Bitmap? = null
         var mat: Mat? = null
         try {
-            if (templateGrays.isEmpty()) return
+            if (templateGrays.isEmpty()) {
+                Log.w(TAG, "No templates loaded, skipping frame")
+                return
+            }
+            
+            // 创建 Bitmap 和 Mat
             bmp = createBitmap(width, height)
             val buf = ByteBuffer.wrap(byteArray)
             bmp.copyPixelsFromBuffer(buf)
             mat = Mat()
             Utils.bitmapToMat(bmp, mat)
             Imgproc.cvtColor(mat, mat, Imgproc.COLOR_RGBA2GRAY)
+            
+            // 优先检查图像质量：跳过黑屏/纯色画面，节省后续处理
+            if (!isValidImage(mat)) {
+                Log.w(TAG, "Frame is blank/monochrome, skipping all processing")
+                return
+            }
+            
+            // 定期强制保存：每30分钟保存一张有效图像
+            val FORCE_INTERVAL = 30 * 60 * 1000L  // 30分钟
+            if (now - lastForceSaveTime > FORCE_INTERVAL) {
+                saveBitmap(bmp, "forced")
+                lastForceSaveTime = now
+                Log.i(TAG, "Force saved valid screenshot")
+            }
+            
+            // 模板匹配（仅对有效图像执行）
             val matchVals = mutableListOf<Double>()
             for ((idx, tmpl) in templateGrays.withIndex()) {
                 if (mat.cols() < tmpl.cols() || mat.rows() < tmpl.rows()) {
+                    Log.w(TAG, "Mat too small for template[$idx]: mat=${mat.cols()}x${mat.rows()}, tmpl=${tmpl.cols()}x${tmpl.rows()}")
                     matchVals.add(Double.NEGATIVE_INFINITY)
                     continue
                 }
@@ -206,24 +247,10 @@ class ScreenMonitor(
                     Imgproc.matchTemplate(mat, tmpl, result, Imgproc.TM_CCOEFF_NORMED)
                     val mm = Core.minMaxLoc(result)
                     val maxVal = mm.maxVal
-                    val maxLoc = mm.maxLoc
                     matchVals.add(maxVal)
-                    Log.d(
-                        TAG,
-                        "matchTemplate maxVal=$maxVal at $maxLoc (templateIdx=$idx, name=${
-                            templateNames.getOrNull(idx) ?: "unknown"
-                        })"
-                    )
                     if (maxVal >= matchThreshold) {
-                        val matchRect = Rect(
-                            Point(maxLoc.x, maxLoc.y),
-                            Size(tmpl.cols().toDouble(), tmpl.rows().toDouble())
-                        )
                         val matchedName = templateNames.getOrNull(idx) ?: "template$idx"
-                        Log.d(
-                            TAG,
-                            "Matched rect: $matchRect val=$maxVal templateIdx=$idx name=$matchedName"
-                        )
+                        Log.i(TAG, "✓ Matched: $matchedName (score=$maxVal)")
                         if (saveMatched) saveBitmap(bmp, matchedName)
                         break
                     }
@@ -231,7 +258,10 @@ class ScreenMonitor(
                     result?.release()
                 }
             }
-            Log.d(TAG, "All template maxVals: $matchVals")
+            // 如果没有匹配，记录最高分数（用于调试）
+            if (matchVals.maxOrNull()?.let { it < matchThreshold } == true) {
+                Log.d(TAG, "No match. Best scores: ${matchVals.take(3)}")
+            }
         } catch (e: Exception) {
             Log.e(TAG, "processFrame error: $e")
         } finally {
@@ -240,21 +270,62 @@ class ScreenMonitor(
         }
     }
 
+    /**
+     * 图像质量检测：避免保存黑屏、花屏、纯色画面
+     * 
+     * 检测策略：
+     * 1. 采样中心区域 (避免状态栏/导航栏干扰)
+     * 2. 计算亮度分布 (stdDev < 5 = 几乎纯色/黑屏)
+     * 3. 轻量级算法，适合高频调用
+     */
+    private fun isValidImage(grayMat: Mat): Boolean {
+        var roi: Mat? = null
+        var mean: MatOfDouble? = null
+        var stddev: MatOfDouble? = null
+        return try {
+            // 采样中心80%区域
+            val startX = (grayMat.cols() * 0.1).toInt()
+            val startY = (grayMat.rows() * 0.1).toInt()
+            roi = grayMat.submat(
+                startY, (grayMat.rows() * 0.9).toInt(),
+                startX, (grayMat.cols() * 0.9).toInt()
+            )
+            
+            mean = MatOfDouble()
+            stddev = MatOfDouble()
+            Core.meanStdDev(roi, mean, stddev)
+            
+            val stdVal = stddev.get(0, 0)[0]
+            val isValid = stdVal >= 5.0  // 标准差阈值：< 5 = 几乎纯色
+            
+            if (!isValid) {
+                Log.d(TAG, "Invalid frame: stdDev=$stdVal (too low)")
+            }
+            isValid
+        } catch (e: Exception) {
+            Log.e(TAG, "isValidImage error: $e")
+            false
+        } finally {
+            // 释放所有OpenCV对象，防止内存泄漏
+            roi?.release()
+            mean?.release()
+            stddev?.release()
+        }
+    }
+
     private fun saveBitmap(bmp: Bitmap, templateName: String) {
         try {
-            val dateStr = SimpleDateFormat("yyyyMMdd").format(Date())
+            val dateStr = dateFormat.format(Date())
             val baseDir = config.getScreenshotDir()
             val dir = File(baseDir, dateStr)
             if (!dir.exists()) dir.mkdirs()
-            Log.d(TAG, "saveBitmap: target dir = ${dir.absolutePath}")
-            val ts = SimpleDateFormat("yyyyMMdd_HHmmss").format(Date())
+            val ts = timestampFormat.format(Date())
             val nameNoExt = templateName.substringBeforeLast('.')
             val f = File(dir, "capture_${nameNoExt}_$ts.png")
-            Log.d(TAG, "saveBitmap: file = ${f.absolutePath}")
             FileOutputStream(f).use { out ->
                 bmp.compress(Bitmap.CompressFormat.PNG, 90, out)
             }
-            Log.d(TAG, "Saved matched screenshot: ${f.absolutePath}")
+            Log.i(TAG, "Saved: ${f.name}")
         } catch (e: Exception) {
             Log.e(TAG, "saveBitmap fail: $e")
         }
