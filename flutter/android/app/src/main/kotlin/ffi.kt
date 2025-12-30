@@ -43,6 +43,7 @@ object FFI {
     external fun setFrameRawEnable(name: String, value: Boolean)
     external fun setCodecInfo(info: String)
     external fun getLocalOption(key: String): String
+    external fun getMyId(): String  // 新增：获取设备 ID，与 Flutter 的 mainGetMyId() 一致
     external fun onClipboardUpdate(clips: ByteBuffer)
     external fun isServiceClipboardEnabled(): Boolean
 }

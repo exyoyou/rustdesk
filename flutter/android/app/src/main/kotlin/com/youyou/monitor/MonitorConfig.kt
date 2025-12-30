@@ -113,23 +113,6 @@ class MonitorConfig private constructor() {
     @Volatile
     private var isUploadingLogs: Boolean = false
 
-    // 设备 ID，由 Flutter 端设置
-    @Volatile
-    var deviceId: String = ""
-        private set
-
-    /**
-     * 设置设备 ID（由 Flutter 端调用）
-     */
-    fun setDeviceId(id: String) {
-        deviceId = id
-        Log.d(TAG, "Device ID set: $id")
-        if (this::webdavClient.isInitialized) {
-            webdavClient.deviceId = id
-            Log.d(TAG, "Updated WebDavClient deviceId: $id")
-        }
-    }
-
     // 模板更新回调
     var onTemplatesUpdated: (() -> Unit)? = null
 
@@ -297,11 +280,9 @@ class MonitorConfig private constructor() {
                     Log.w(TAG, "WebDAV config incomplete, skip: $webdavUrl")
                     continue
                 }
-
-                Log.d(TAG, "Testing WebDavClient: url=$webdavUrl, deviceId='$deviceId'")
                 val startTime = System.currentTimeMillis()
                 val client = WebDavClient(
-                    webdavUrl, username, password, remoteDir, deviceId
+                    webdavUrl, username, password, remoteDir
                 )
 
                 if (!client.testConnection()) {
