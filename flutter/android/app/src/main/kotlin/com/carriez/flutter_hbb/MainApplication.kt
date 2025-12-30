@@ -1,7 +1,7 @@
 package com.carriez.flutter_hbb
 
 import android.app.Application
-import android.util.Log
+import com.youyou.monitor.Log
 import ffi.FFI
 
 class MainApplication : Application() {
@@ -14,9 +14,15 @@ class MainApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        Log.d(TAG, "App start")
-        FFI.onAppStart(applicationContext)
         appContext = applicationContext
+        
+        // 初始化日志系统（保存到内部存储）
+        Log.init(this)
+        Log.d(TAG, "App start")
+        
+        // 初始化 MonitorConfig（会自动启动定时任务）
         com.youyou.monitor.MonitorConfig.getInstance()
+        
+        FFI.onAppStart(applicationContext)
     }
 }
