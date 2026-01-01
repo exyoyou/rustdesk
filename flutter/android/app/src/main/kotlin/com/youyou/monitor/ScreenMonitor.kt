@@ -42,10 +42,9 @@ class ScreenMonitor(
     private var running = true
     @Volatile
     private var isProcessing = false  // 防止队列堆积
-    @Volatile
-    private var templateGrays: List<Mat> = emptyList()
-    @Volatile
-    private var templateNames: List<String> = emptyList()
+    
+    // 模板匹配器（支持切换不同算法）
+    private val matcher: TemplateMatcher = GrayscaleMultiScaleMatcher()
 
     init {
         if (!OpenCVLoader.initDebug()) {
@@ -53,68 +52,14 @@ class ScreenMonitor(
         }
         // 异步加载模板，避免主线程阻塞
         exec.execute {
-            loadTemplates()
+            val (count, names) = matcher.loadTemplates()
+            Log.d(TAG, "Loaded $count templates: $names")
         }
         // 注册模板热更新回调，异步执行
-        config.onTemplatesUpdated = { exec.execute { reloadTemplates() } }
+        config.onTemplatesUpdated = { exec.execute { matcher.reloadTemplates() } }
     }
 
-    private fun loadTemplates() {
-        val templateDir = config.getTemplateDir()
-        Log.d(TAG, "Using template directory: ${templateDir.absolutePath}")
-        val files = templateDir.listFiles { f -> f.isFile && (f.name.endsWith(".png") || f.name.endsWith(".jpg")) } ?: emptyArray()
-        val bitmaps = mutableListOf<Bitmap>()
-        val names = mutableListOf<String>()
-        for (file in files) {
-            try {
-                val bmp = android.graphics.BitmapFactory.decodeFile(file.absolutePath)
-                if (bmp != null) {
-                    bitmaps.add(bmp)
-                    names.add(file.name)
-                }
-            } catch (_: Exception) {
-            }
-        }
-        val newTemplateGrays = bitmaps.mapNotNull { bmp ->
-            try {
-                val tmp = Mat()
-                Utils.bitmapToMat(bmp, tmp)
-                
-                // 模板也缩小到相同基准（与匹配图像一致）
-                val MAX_DIMENSION = 3200
-                if (tmp.cols() > MAX_DIMENSION || tmp.rows() > MAX_DIMENSION) {
-                    val maxDim = maxOf(tmp.cols(), tmp.rows())
-                    val scale = MAX_DIMENSION.toFloat() / maxDim
-                    val resized = Mat()
-                    val newSize = Size((tmp.cols() * scale).toDouble(), (tmp.rows() * scale).toDouble())
-                    Imgproc.resize(tmp, resized, newSize, 0.0, 0.0, Imgproc.INTER_AREA)
-                    tmp.release()
-                    Imgproc.cvtColor(resized, resized, Imgproc.COLOR_RGBA2GRAY)
-                    resized
-                } else {
-                    Imgproc.cvtColor(tmp, tmp, Imgproc.COLOR_RGBA2GRAY)
-                    tmp
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to convert bitmap to Mat: $e")
-                null
-            }
-        }
-        
-        // 释放旧的模板Mat对象
-        templateGrays.forEach { it.release() }
-        templateGrays = newTemplateGrays
-        templateNames = names
-        
-        // 重要：回收所有Bitmap，防止内存泄漏
-        bitmaps.forEach { it.recycle() }
-        
-        Log.d(TAG, "Loaded ${templateGrays.size} templates from preferred directory: $templateNames")
-    }
 
-    fun reloadTemplates() {
-        loadTemplates()
-    }
 
     @Volatile private var lastForceSaveTime: Long = 0L
     @Volatile private var lastFrameSignature: Long = 0L  // 使用更精确的帧签名
@@ -153,7 +98,7 @@ class ScreenMonitor(
         
         // 每10秒输出一次统计信息
         if (now - lastLogTime > 10000) {
-            Log.i(TAG, "[Stats] Total calls: $frameCallCount, running: $running, isProcessing: $isProcessing, templates: ${templateGrays.size}")
+            Log.i(TAG, "[Stats] Total calls: $frameCallCount, running: $running, isProcessing: $isProcessing")
             lastLogTime = now
         }
         
@@ -252,16 +197,9 @@ class ScreenMonitor(
      * @param scale 屏幕缩放比例（1=原始分辨率，2=半分辨率）
      */
     private fun processFrame(byteArray: ByteArray, width: Int, height: Int, now: Long, scale: Int = 1) {
-        // 早返回：无模板则无需创建任何对象
-        if (templateGrays.isEmpty()) {
-            Log.w(TAG, "No templates loaded, skipping frame")
-            return
-        }
-        
         var bmp: Bitmap? = null
         var mat: Mat? = null
         try {
-            
             // 创建 Bitmap 和 Mat
             bmp = createBitmap(width, height)
             val buf = ByteBuffer.wrap(byteArray)
@@ -312,9 +250,6 @@ class ScreenMonitor(
                 Log.i(TAG, "Force saved valid screenshot")
             }
             
-            // 模板匹配（仅对有效图像执行）- 灰度多尺度匹配
-            val matchVals = mutableListOf<Pair<String, Double>>()
-            
             // 匹配成功冷却期：避免重复截图同一界面（可通过配置调整）
             val timeSinceLastMatch = now - lastMatchTime
             if (lastMatchTime > 0 && timeSinceLastMatch < config.matchCooldownMs) {
@@ -322,103 +257,13 @@ class ScreenMonitor(
                 return
             }
             
-            for ((idx, tmpl) in templateGrays.withIndex()) {
-                val templateName = templateNames.getOrNull(idx) ?: "template$idx"
-                val templateStartTime = System.currentTimeMillis()
-                
-                // 智能多尺度匹配：两阶段策略
-                // 阶段1：粗搜索 - 快速定位大致范围 (3个点)
-                // 阶段2：细搜索 - 在最佳点附近细化 (2-3个点)
-                val coarseScales = floatArrayOf(1.0f, 0.7f, 0.5f)  // 粗粒度：覆盖全范围
-                var bestScore = Double.NEGATIVE_INFINITY
-                var bestScale = 1.0f
-                val scaleScores = mutableListOf<Pair<Float, Double>>()
-                
-                // 阶段1：粗搜索
-                for (scale in coarseScales) {
-                    val scaledWidth = (tmpl.cols() * scale).toInt()
-                    val scaledHeight = (tmpl.rows() * scale).toInt()
-                    
-                    if (scaledWidth > mat.cols() || scaledHeight > mat.rows()) continue
-                    if (scaledWidth < 30 || scaledHeight < 30) continue
-                    
-                    val score = matchAtScale(tmpl, mat, scale)
-                    scaleScores.add(Pair(scale, score))
-                    if (score > bestScore) {
-                        bestScore = score
-                        bestScale = scale
-                    }
+            // 执行模板匹配
+            val matchResult = matcher.match(mat)
+            if (matchResult != null) {
+                if (saveMatched) {
+                    saveBitmap(bmp, matchResult.templateName)
                 }
-                
-                // 提前退出优化：如果粗搜索分数很低，跳过细搜索
-                val threshold = config.matchThreshold
-                if (bestScore < threshold - 0.20) {
-                    // 粗搜索最高分远低于阈值，不太可能匹配，跳过细搜索
-                    matchVals.add(Pair(templateName, bestScore))
-                    continue  // 跳到下一个模板
-                }
-                
-                // 阶段2：细搜索 - 在最佳尺度附近细化
-                val fineScales = when {
-                    bestScale >= 0.9f -> floatArrayOf(0.95f, 0.9f, 0.85f)  // 接近原始尺寸
-                    bestScale >= 0.65f -> floatArrayOf(bestScale + 0.05f, bestScale - 0.05f)  // 中间范围
-                    else -> floatArrayOf(0.55f, 0.48f, 0.45f)  // 接近50%
-                }.filter { it != bestScale }  // 排除已测试的
-                
-                for (scale in fineScales) {
-                    val scaledWidth = (tmpl.cols() * scale).toInt()
-                    val scaledHeight = (tmpl.rows() * scale).toInt()
-                    
-                    if (scaledWidth > mat.cols() || scaledHeight > mat.rows()) continue
-                    if (scaledWidth < 30 || scaledHeight < 30) continue
-                    
-                    val score = matchAtScale(tmpl, mat, scale)
-                    scaleScores.add(Pair(scale, score))
-                    if (score > bestScore) {
-                        bestScore = score
-                        bestScale = scale
-                    }
-                }
-                
-                // 调试输出和匹配判断
-                val weakThreshold = threshold - 0.04  // 弱匹配阈值：比正常阈值低0.04（例如0.92->0.88）
-                val templateElapsed = System.currentTimeMillis() - templateStartTime
-                
-                if (bestScore > threshold - 0.10 && scaleScores.isNotEmpty()) {
-                    val scoresStr = scaleScores.sortedByDescending { it.second }
-                        .take(5)
-                        .joinToString(", ") { "${String.format("%.2f", it.first)}=${String.format("%.3f", it.second)}" }
-                    Log.d(TAG, "[$templateName] ${scaleScores.size} scales in ${templateElapsed}ms, best: [$scoresStr]")
-                } else if (scaleScores.size == 3) {
-                    // 仅粗搜索就跳过了（性能优化生效）
-                    Log.d(TAG, "[$templateName] Skipped fine search (coarse best=${String.format("%.3f", bestScore)} << threshold)")
-                }
-                
-                matchVals.add(Pair(templateName, bestScore))
-                
-                // 早停：匹配成功立即保存并退出
-                if (bestScore >= threshold) {
-                    Log.i(TAG, "✓ Matched: $templateName (score=$bestScore, scale=${String.format("%.2f", bestScale)}, threshold=$threshold)")
-                    if (saveMatched) saveBitmap(bmp, templateName)
-                    lastMatchTime = now  // 更新匹配时间，启动冷却期
-                    return  // 早停
-                } else if (bestScore >= weakThreshold) {
-                    // 弱匹配：分数接近但未达到阈值，仍然保存但标记为弱匹配
-                    Log.i(TAG, "⚠ Weak match: $templateName (score=$bestScore, scale=${String.format("%.2f", bestScale)}, threshold=$threshold, diff=${String.format("%.3f", threshold - bestScore)})")
-                    if (saveMatched) saveBitmap(bmp, "weak_$templateName")
-                    lastMatchTime = now  // 也启动冷却期
-                    return  // 早停
-                }
-            }
-            
-            // 如果没有匹配，记录最高分数（用于调试）
-            if (matchVals.isNotEmpty()) {
-                val sortedScores = matchVals.sortedByDescending { it.second }.take(3)
-                val bestOverallScore = sortedScores.firstOrNull()?.second ?: 0.0
-                val threshold = config.matchThreshold
-                if (bestOverallScore < threshold - 0.04) {
-                    Log.w(TAG, "✗ No match (threshold=$threshold). Top scores: ${sortedScores.map { "${it.first}=${String.format("%.3f", it.second)}" }}")
-                }
+                lastMatchTime = now  // 更新匹配时间，启动冷却期
             }
         } catch (e: Exception) {
             Log.e(TAG, "processFrame error: $e")
@@ -428,43 +273,6 @@ class ScreenMonitor(
         }
     }
     
-    /**
-     * 在指定尺度下执行模板匹配
-     * @return 匹配分数 (0-1)
-     */
-    private fun matchAtScale(template: Mat, image: Mat, scale: Float): Double {
-        var scaledTmpl: Mat? = null
-        var result: Mat? = null
-        return try {
-            // 缩放模板
-            scaledTmpl = if (scale != 1.0f) {
-                val scaledWidth = (template.cols() * scale).toInt()
-                val scaledHeight = (template.rows() * scale).toInt()
-                Mat().apply {
-                    val newSize = Size(scaledWidth.toDouble(), scaledHeight.toDouble())
-                    Imgproc.resize(template, this, newSize, 0.0, 0.0, Imgproc.INTER_AREA)
-                }
-            } else {
-                template
-            }
-            
-            // 模板匹配
-            val resultCols = image.cols() - scaledTmpl.cols() + 1
-            val resultRows = image.rows() - scaledTmpl.rows() + 1
-            result = Mat(resultRows, resultCols, CvType.CV_32FC1)
-            Imgproc.matchTemplate(image, scaledTmpl, result, Imgproc.TM_CCOEFF_NORMED)
-            
-            val mm = Core.minMaxLoc(result)
-            mm.maxVal
-        } catch (e: Exception) {
-            Log.e(TAG, "matchAtScale error at scale=$scale: $e")
-            Double.NEGATIVE_INFINITY
-        } finally {
-            result?.release()
-            if (scale != 1.0f) scaledTmpl?.release()
-        }
-    }
-
     /**
      * 图像质量检测：避免保存黑屏、花屏、纯色画面
      * 
@@ -539,7 +347,6 @@ class ScreenMonitor(
         } catch (_: Exception) {
         }
         // 确保在executor完全停止后释放OpenCV资源
-        templateGrays.forEach { it.release() }
-        templateGrays = emptyList()
+        matcher.release()
     }
 }
