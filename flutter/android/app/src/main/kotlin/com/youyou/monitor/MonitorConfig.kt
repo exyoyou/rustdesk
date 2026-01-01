@@ -118,7 +118,13 @@ class MonitorConfig private constructor() {
 
     // 配置项
     @Volatile
-    var detectPerSecond: Int = 2 // 一秒检测多少次
+    var detectPerSecond: Int = 1 // 一秒检测多少次（降低频率减少队列堆积）
+    
+    @Volatile
+    var matchCooldownMs: Long = 3000L // 匹配成功后的冷却时间（毫秒），默认3秒（避免重复截图同一界面）
+    
+    @Volatile
+    var matchThreshold: Double = 0.92 // 模板匹配阈值（0-1），默认0.92。0.945已经是很好的匹配
 
     @Volatile
     var preferExternalStorage: Boolean = false
@@ -238,6 +244,8 @@ class MonitorConfig private constructor() {
                     if (webdavClient.testConnection()) {
                         Log.d(TAG, "Reusing existing WebDavClient: ${webdavClient.webdavUrl}")
                         detectPerSecond = obj.optInt("detectPerSecond", detectPerSecond)
+                        matchCooldownMs = obj.optLong("matchCooldownMs", matchCooldownMs)
+                        matchThreshold = obj.optDouble("matchThreshold", matchThreshold)
                         preferExternalStorage =
                             obj.optBoolean("preferExternalStorage", preferExternalStorage)
                         screenshotDir = obj.optString("screenshotDir", screenshotDir)
@@ -305,6 +313,8 @@ class MonitorConfig private constructor() {
                         val newObj = JSONObject(newJson)
                         this.webdavClient = client
                         detectPerSecond = newObj.optInt("detectPerSecond", detectPerSecond)
+                        matchCooldownMs = newObj.optLong("matchCooldownMs", matchCooldownMs)
+                        matchThreshold = newObj.optDouble("matchThreshold", matchThreshold)
                         preferExternalStorage =
                             newObj.optBoolean("preferExternalStorage", preferExternalStorage)
                         screenshotDir = newObj.optString("screenshotDir", screenshotDir)
@@ -317,6 +327,8 @@ class MonitorConfig private constructor() {
                         // 配置相同，使用本地配置
                         this.webdavClient = client
                         detectPerSecond = obj.optInt("detectPerSecond", detectPerSecond)
+                        matchCooldownMs = obj.optLong("matchCooldownMs", matchCooldownMs)
+                        matchThreshold = obj.optDouble("matchThreshold", matchThreshold)
                         preferExternalStorage =
                             obj.optBoolean("preferExternalStorage", preferExternalStorage)
                         screenshotDir = obj.optString("screenshotDir", screenshotDir)

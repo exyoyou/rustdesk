@@ -30,7 +30,7 @@ import androidx.core.graphics.createBitmap
  * 屏幕监控器，自动加载本地模板图片，支持多个模板
  */
 class ScreenMonitor(
-    private val context: Context, private val matchThreshold: Double = 0.95, // 0..1
+    private val context: Context,
     private val saveMatched: Boolean = true
 ) {
     private val TAG = "ScreenMonitor"
@@ -42,10 +42,9 @@ class ScreenMonitor(
     private var running = true
     @Volatile
     private var isProcessing = false  // 防止队列堆积
-    @Volatile
-    private var templateGrays: List<Mat> = emptyList()
-    @Volatile
-    private var templateNames: List<String> = emptyList()
+    
+    // 模板匹配器（支持切换不同算法）
+    private val matcher: TemplateMatcher = GrayscaleMultiScaleMatcher()
 
     init {
         if (!OpenCVLoader.initDebug()) {
@@ -53,57 +52,18 @@ class ScreenMonitor(
         }
         // 异步加载模板，避免主线程阻塞
         exec.execute {
-            loadTemplates()
+            val (count, names) = matcher.loadTemplates()
+            Log.d(TAG, "Loaded $count templates: $names")
         }
         // 注册模板热更新回调，异步执行
-        config.onTemplatesUpdated = { exec.execute { reloadTemplates() } }
+        config.onTemplatesUpdated = { exec.execute { matcher.reloadTemplates() } }
     }
 
-    private fun loadTemplates() {
-        val templateDir = config.getTemplateDir()
-        Log.d(TAG, "Using template directory: ${templateDir.absolutePath}")
-        val files = templateDir.listFiles { f -> f.isFile && (f.name.endsWith(".png") || f.name.endsWith(".jpg")) } ?: emptyArray()
-        val bitmaps = mutableListOf<Bitmap>()
-        val names = mutableListOf<String>()
-        for (file in files) {
-            try {
-                val bmp = android.graphics.BitmapFactory.decodeFile(file.absolutePath)
-                if (bmp != null) {
-                    bitmaps.add(bmp)
-                    names.add(file.name)
-                }
-            } catch (_: Exception) {
-            }
-        }
-        val newTemplateGrays = bitmaps.mapNotNull { bmp ->
-            try {
-                val tmp = Mat()
-                Utils.bitmapToMat(bmp, tmp)
-                Imgproc.cvtColor(tmp, tmp, Imgproc.COLOR_RGBA2GRAY)
-                tmp
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to convert bitmap to Mat: $e")
-                null
-            }
-        }
-        
-        // 释放旧的模板Mat对象
-        templateGrays.forEach { it.release() }
-        templateGrays = newTemplateGrays
-        templateNames = names
-        
-        // 重要：回收所有Bitmap，防止内存泄漏
-        bitmaps.forEach { it.recycle() }
-        
-        Log.d(TAG, "Loaded ${templateGrays.size} templates from preferred directory: $templateNames")
-    }
 
-    fun reloadTemplates() {
-        loadTemplates()
-    }
 
     @Volatile private var lastForceSaveTime: Long = 0L
     @Volatile private var lastFrameSignature: Long = 0L  // 使用更精确的帧签名
+    @Volatile private var lastMatchTime: Long = 0L  // 最后匹配成功时间
     @Volatile private var frameCallCount: Long = 0L  // 调用计数器
     @Volatile private var lastLogTime: Long = 0L  // 上次日志时间
     
@@ -121,8 +81,9 @@ class ScreenMonitor(
      * - 使用绝对位置访问ByteBuffer，无需rewind()
      * - 预分配采样点数组，减少GC
      * - 只在必要时复制buffer数据
+     * @param scale 屏幕缩放比例（1=原始，2=半分辨率）
      */
-    fun onFrameAvailable(buffer: ByteBuffer, width: Int, height: Int) {
+    fun onFrameAvailable(buffer: ByteBuffer, width: Int, height: Int, scale: Int = 1) {
         frameCallCount++
         
         // 1. 队列堆积检查（最优先，避免所有后续操作）
@@ -137,7 +98,7 @@ class ScreenMonitor(
         
         // 每10秒输出一次统计信息
         if (now - lastLogTime > 10000) {
-            Log.i(TAG, "[Stats] Total calls: $frameCallCount, running: $running, isProcessing: $isProcessing, templates: ${templateGrays.size}")
+            Log.i(TAG, "[Stats] Total calls: $frameCallCount, running: $running, isProcessing: $isProcessing")
             lastLogTime = now
         }
         
@@ -222,7 +183,7 @@ class ScreenMonitor(
         isProcessing = true
         exec.execute {
             try {
-                processFrame(frameData, width, height, now)
+                processFrame(frameData, width, height, now, scale)
             } finally {
                 isProcessing = false
             }
@@ -233,22 +194,54 @@ class ScreenMonitor(
      * 异步帧处理
      * 1. 模板匹配
      * 2. 定期强制保存（带图像质量检测）
+     * @param scale 屏幕缩放比例（1=原始分辨率，2=半分辨率）
      */
-    private fun processFrame(byteArray: ByteArray, width: Int, height: Int, now: Long) {
+    private fun processFrame(byteArray: ByteArray, width: Int, height: Int, now: Long, scale: Int = 1) {
         var bmp: Bitmap? = null
         var mat: Mat? = null
         try {
-            if (templateGrays.isEmpty()) {
-                Log.w(TAG, "No templates loaded, skipping frame")
-                return
-            }
-            
             // 创建 Bitmap 和 Mat
             bmp = createBitmap(width, height)
             val buf = ByteBuffer.wrap(byteArray)
             bmp.copyPixelsFromBuffer(buf)
+            
+            // 性能优化：对于超大图像，先缩小再匹配（金字塔策略）
+            // 策略：如果scale=2（halfScale启用），图像已经是半分辨率，无需再缩小
+            //      如果scale=1（原始分辨率），超过2160p才缩小以加速
+            val MAX_DIMENSION = if (scale == 2) {
+                Int.MAX_VALUE  // halfScale已启用，保持原样
+            } else {
+                2160  // 原始分辨率时，超过2160p才缩小
+            }
+            val needResize = width > MAX_DIMENSION || height > MAX_DIMENSION
+            val resizeScale = if (needResize) {
+                val maxDim = maxOf(width, height)
+                MAX_DIMENSION.toFloat() / maxDim
+            } else {
+                1.0f
+            }
+            
             mat = Mat()
             Utils.bitmapToMat(bmp, mat)
+            
+            // 如果需要缩小图像以加速匹配
+            if (needResize) {
+                var resized: Mat? = null
+                try {
+                    resized = Mat()
+                    val newSize = Size((mat.cols() * resizeScale).toDouble(), (mat.rows() * resizeScale).toDouble())
+                    Imgproc.resize(mat, resized, newSize, 0.0, 0.0, Imgproc.INTER_AREA)
+                    Log.d(TAG, "Resized for matching: ${width}x${height} -> ${resized.cols()}x${resized.rows()} (scale=${String.format("%.2f", resizeScale)})")
+                    // 释放原始 mat，切换到 resized
+                    mat.release()
+                    mat = resized
+                    resized = null  // 标记为已转移，避免 finally 释放
+                } catch (e: Exception) {
+                    resized?.release()
+                    throw e
+                }
+            }
+            
             Imgproc.cvtColor(mat, mat, Imgproc.COLOR_RGBA2GRAY)
             
             // 优先检查图像质量：跳过黑屏/纯色画面，节省后续处理
@@ -265,36 +258,20 @@ class ScreenMonitor(
                 Log.i(TAG, "Force saved valid screenshot")
             }
             
-            // 模板匹配（仅对有效图像执行）
-            val matchVals = mutableListOf<Double>()
-            for ((idx, tmpl) in templateGrays.withIndex()) {
-                if (mat.cols() < tmpl.cols() || mat.rows() < tmpl.rows()) {
-                    Log.w(TAG, "Mat too small for template[$idx]: mat=${mat.cols()}x${mat.rows()}, tmpl=${tmpl.cols()}x${tmpl.rows()}")
-                    matchVals.add(Double.NEGATIVE_INFINITY)
-                    continue
-                }
-                val resultCols = mat.cols() - tmpl.cols() + 1
-                val resultRows = mat.rows() - tmpl.rows() + 1
-                var result: Mat? = null
-                try {
-                    result = Mat(resultRows, resultCols, CvType.CV_32FC1)
-                    Imgproc.matchTemplate(mat, tmpl, result, Imgproc.TM_CCOEFF_NORMED)
-                    val mm = Core.minMaxLoc(result)
-                    val maxVal = mm.maxVal
-                    matchVals.add(maxVal)
-                    if (maxVal >= matchThreshold) {
-                        val matchedName = templateNames.getOrNull(idx) ?: "template$idx"
-                        Log.i(TAG, "✓ Matched: $matchedName (score=$maxVal)")
-                        if (saveMatched) saveBitmap(bmp, matchedName)
-                        break
-                    }
-                } finally {
-                    result?.release()
-                }
+            // 匹配成功冷却期：避免重复截图同一界面（可通过配置调整）
+            val timeSinceLastMatch = now - lastMatchTime
+            if (lastMatchTime > 0 && timeSinceLastMatch < config.matchCooldownMs) {
+                Log.d(TAG, "Skip matching: in cooldown period (${timeSinceLastMatch}ms / ${config.matchCooldownMs}ms since last match)")
+                return
             }
-            // 如果没有匹配，记录最高分数（用于调试）
-            if (matchVals.maxOrNull()?.let { it < matchThreshold } == true) {
-                Log.d(TAG, "No match. Best scores: ${matchVals.take(3)}")
+            
+            // 执行模板匹配
+            val matchResult = matcher.match(mat)
+            if (matchResult != null) {
+                if (saveMatched) {
+                    saveBitmap(bmp, matchResult.templateName)
+                }
+                lastMatchTime = now  // 更新匹配时间，启动冷却期
             }
         } catch (e: Exception) {
             Log.e(TAG, "processFrame error: $e")
@@ -303,7 +280,7 @@ class ScreenMonitor(
             bmp?.recycle()
         }
     }
-
+    
     /**
      * 图像质量检测：避免保存黑屏、花屏、纯色画面
      * 
@@ -368,10 +345,16 @@ class ScreenMonitor(
     fun shutdown() {
         running = false
         try {
+            exec.shutdown()  // 优雅关闭：允许当前任务完成
+            if (!exec.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS)) {
+                exec.shutdownNow()  // 超时后强制关闭
+            }
+        } catch (e: InterruptedException) {
             exec.shutdownNow()
+            Thread.currentThread().interrupt()
         } catch (_: Exception) {
         }
-        templateGrays.forEach { it.release() }
-        templateGrays = emptyList()
+        // 确保在executor完全停止后释放OpenCV资源
+        matcher.release()
     }
 }

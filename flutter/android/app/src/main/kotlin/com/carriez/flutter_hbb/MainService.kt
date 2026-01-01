@@ -518,15 +518,17 @@ class MainService : Service() {
                                 if (image == null) return@setOnImageAvailableListener
                                 val planes = image.planes
                                 val buffer = planes[0].buffer
-                                buffer.rewind()
                                 
                                 // 推流到 Rust（仅在 isCapture=true 时）
                                 if (isCapture) {
+                                    buffer.position(0)  // 重置 position
                                     FFI.onVideoFrameUpdate(buffer)
                                 }
 
                                 // ScreenMonitor 始终工作（只要 ImageReader 活着）
-                                screenMonitor?.onFrameAvailable(buffer, image.width, image.height)
+                                buffer.position(0)  // 重置 position
+                                val currentScale = SCREEN_INFO.scale  // 传递当前缩放比例（1或2）
+                                screenMonitor?.onFrameAvailable(buffer, image.width, image.height, currentScale)
                             }
                         } catch (ignored: java.lang.Exception) {
                         }
