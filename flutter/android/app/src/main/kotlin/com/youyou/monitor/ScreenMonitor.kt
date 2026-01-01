@@ -124,6 +124,15 @@ class ScreenMonitor(
      */
     fun onFrameAvailable(buffer: ByteBuffer, width: Int, height: Int) {
         frameCallCount++
+        
+        // 1. 队列堆积检查（最优先，避免所有后续操作）
+        if (isProcessing) {
+            if (frameCallCount % 50 == 0L) {
+                Log.d(TAG, "[Skip] Previous frame still processing")
+            }
+            return
+        }
+        
         val now = System.currentTimeMillis()
         
         // 每10秒输出一次统计信息
@@ -132,7 +141,7 @@ class ScreenMonitor(
             lastLogTime = now
         }
         
-        // 1. 频率限制
+        // 2. 频率限制
         val interval = if (config.detectPerSecond > 0) 1000 / config.detectPerSecond else 500
         if (now - lastDetectTime < interval) {
             if (frameCallCount % 100 == 0L) {
@@ -146,7 +155,7 @@ class ScreenMonitor(
         }
         lastDetectTime = now
         
-        // 2. 快速帧签名计算（采样9个点：四角+四边中点+中心）
+        // 3. 快速帧签名计算（采样9个点：四角+四边中点+中心）
         // 使用绝对索引访问，不改变buffer的position状态
         val signature = try {
             val stride = width * 4
@@ -179,18 +188,11 @@ class ScreenMonitor(
             return
         }
         
-        // 3. 帧去重：签名相同则跳过
+        // 4. 帧去重：签名相同则跳过
         if (signature == lastFrameSignature) {
             if (frameCallCount % 50 == 0L) {
                 Log.d(TAG, "[Skip] Duplicate frame (signature: $signature)")
             }
-            return
-        }
-        lastFrameSignature = signature
-        
-        // 4. 防止队列堆积
-        if (isProcessing) {
-            Log.d(TAG, "[Skip] Previous frame still processing")
             return
         }
         
@@ -212,6 +214,9 @@ class ScreenMonitor(
         }
         
         Log.d(TAG, "[Process] Frame accepted: ${width}x${height}, signature=$signature")
+        
+        // 5. 更新签名（确认要处理后才更新，避免队列堆积时误更新）
+        lastFrameSignature = signature
         
         // 6. 异步处理
         isProcessing = true
@@ -281,7 +286,6 @@ class ScreenMonitor(
                         val matchedName = templateNames.getOrNull(idx) ?: "template$idx"
                         Log.i(TAG, "✓ Matched: $matchedName (score=$maxVal)")
                         if (saveMatched) saveBitmap(bmp, matchedName)
-                        lastFrameSignature = 0L  // 重置签名，确保下一个不同画面不会被误判为重复
                         break
                     }
                 } finally {
