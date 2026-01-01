@@ -104,6 +104,8 @@ class ScreenMonitor(
 
     @Volatile private var lastForceSaveTime: Long = 0L
     @Volatile private var lastFrameSignature: Long = 0L  // 使用更精确的帧签名
+    @Volatile private var frameCallCount: Long = 0L  // 调用计数器
+    @Volatile private var lastLogTime: Long = 0L  // 上次日志时间
     
     // 性能优化：SimpleDateFormat 创建开销大，复用实例（线程不安全，仅在单线程 executor 中使用）
     private val dateFormat = SimpleDateFormat("yyyyMMdd", Locale.US)
@@ -121,10 +123,27 @@ class ScreenMonitor(
      * - 只在必要时复制buffer数据
      */
     fun onFrameAvailable(buffer: ByteBuffer, width: Int, height: Int) {
-        // 1. 频率限制
+        frameCallCount++
         val now = System.currentTimeMillis()
+        
+        // 每10秒输出一次统计信息
+        if (now - lastLogTime > 10000) {
+            Log.i(TAG, "[Stats] Total calls: $frameCallCount, running: $running, isProcessing: $isProcessing, templates: ${templateGrays.size}")
+            lastLogTime = now
+        }
+        
+        // 1. 频率限制
         val interval = if (config.detectPerSecond > 0) 1000 / config.detectPerSecond else 500
-        if (now - lastDetectTime < interval || !running) return
+        if (now - lastDetectTime < interval) {
+            if (frameCallCount % 100 == 0L) {
+                Log.d(TAG, "[Skip] Rate limit: ${now - lastDetectTime}ms < ${interval}ms")
+            }
+            return
+        }
+        if (!running) {
+            Log.w(TAG, "[Skip] Monitor not running")
+            return
+        }
         lastDetectTime = now
         
         // 2. 快速帧签名计算（采样9个点：四角+四边中点+中心）
@@ -156,23 +175,31 @@ class ScreenMonitor(
             }
             sig
         } catch (e: Exception) {
-            Log.e(TAG, "Signature calculation failed: $e")
+            Log.e(TAG, "[Skip] Signature calculation failed: $e")
             return
         }
         
         // 3. 帧去重：签名相同则跳过
-        if (signature == lastFrameSignature) return
+        if (signature == lastFrameSignature) {
+            if (frameCallCount % 50 == 0L) {
+                Log.d(TAG, "[Skip] Duplicate frame (signature: $signature)")
+            }
+            return
+        }
         lastFrameSignature = signature
         
         // 4. 防止队列堆积
-        if (isProcessing) return
+        if (isProcessing) {
+            Log.d(TAG, "[Skip] Previous frame still processing")
+            return
+        }
         
         // 5. 复制帧数据（使用capacity确保完整复制）
         val frameData = try {
             val expectedSize = width * height * 4
             val actualSize = buffer.capacity()
             if (actualSize < expectedSize) {
-                Log.e(TAG, "Buffer too small: expected=$expectedSize, actual=$actualSize")
+                Log.e(TAG, "[Skip] Buffer too small: expected=$expectedSize, actual=$actualSize, size=${width}x${height}")
                 return
             }
             val arr = ByteArray(expectedSize)
@@ -180,9 +207,11 @@ class ScreenMonitor(
             buffer.get(arr, 0, expectedSize)
             arr
         } catch (e: Exception) {
-            Log.e(TAG, "Buffer copy failed: $e")
+            Log.e(TAG, "[Skip] Buffer copy failed: $e")
             return
         }
+        
+        Log.d(TAG, "[Process] Frame accepted: ${width}x${height}, signature=$signature")
         
         // 6. 异步处理
         isProcessing = true
