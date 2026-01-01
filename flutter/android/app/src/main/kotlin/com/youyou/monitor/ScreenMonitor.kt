@@ -226,12 +226,20 @@ class ScreenMonitor(
             
             // 如果需要缩小图像以加速匹配
             if (needResize) {
-                val resized = Mat()
-                val newSize = Size((mat.cols() * resizeScale).toDouble(), (mat.rows() * resizeScale).toDouble())
-                Imgproc.resize(mat, resized, newSize, 0.0, 0.0, Imgproc.INTER_AREA)
-                mat.release()
-                mat = resized
-                Log.d(TAG, "Resized for matching: ${width}x${height} -> ${mat.cols()}x${mat.rows()} (scale=${String.format("%.2f", resizeScale)})")
+                var resized: Mat? = null
+                try {
+                    resized = Mat()
+                    val newSize = Size((mat.cols() * resizeScale).toDouble(), (mat.rows() * resizeScale).toDouble())
+                    Imgproc.resize(mat, resized, newSize, 0.0, 0.0, Imgproc.INTER_AREA)
+                    Log.d(TAG, "Resized for matching: ${width}x${height} -> ${resized.cols()}x${resized.rows()} (scale=${String.format("%.2f", resizeScale)})")
+                    // 释放原始 mat，切换到 resized
+                    mat.release()
+                    mat = resized
+                    resized = null  // 标记为已转移，避免 finally 释放
+                } catch (e: Exception) {
+                    resized?.release()
+                    throw e
+                }
             }
             
             Imgproc.cvtColor(mat, mat, Imgproc.COLOR_RGBA2GRAY)

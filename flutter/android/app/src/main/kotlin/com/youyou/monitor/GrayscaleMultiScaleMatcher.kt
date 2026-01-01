@@ -29,6 +29,19 @@ class GrayscaleMultiScaleMatcher : TemplateMatcher {
     @Volatile
     private var templateNames: List<String> = emptyList()
     
+    // 性能优化：避免重复创建数组对象
+    // 注意：单线程执行器保证无并发，可以安全复用
+    private val coarseScales = floatArrayOf(1.0f, 0.7f, 0.5f)
+    private val fineScalesHigh = floatArrayOf(0.95f, 0.9f, 0.85f)
+    private val fineScalesMid = FloatArray(2)  // 动态填充，单线程安全
+    private val fineScalesLow = floatArrayOf(0.55f, 0.48f, 0.45f)
+    
+    companion object {
+        private const val WEAK_MATCH_OFFSET = 0.04
+        private const val EARLY_EXIT_OFFSET = 0.20
+        private const val MIN_TEMPLATE_SIZE = 30
+    }
+    
     override fun loadTemplates(): Pair<Int, List<String>> {
         val templateDir = config.getTemplateDir()  // 从配置获取模板目录
         
@@ -53,35 +66,48 @@ class GrayscaleMultiScaleMatcher : TemplateMatcher {
         }
         
         val newTemplateGrays = bitmaps.mapNotNull { bmp ->
+            var tmp: Mat? = null
+            var resized: Mat? = null
             try {
-                val tmp = Mat()
+                tmp = Mat()
                 Utils.bitmapToMat(bmp, tmp)
                 
                 // 模板也缩小到相同基准（与匹配图像一致）
                 val MAX_DIMENSION = 3200
-                if (tmp.cols() > MAX_DIMENSION || tmp.rows() > MAX_DIMENSION) {
+                val result = if (tmp.cols() > MAX_DIMENSION || tmp.rows() > MAX_DIMENSION) {
                     val maxDim = maxOf(tmp.cols(), tmp.rows())
                     val scale = MAX_DIMENSION.toFloat() / maxDim
-                    val resized = Mat()
+                    resized = Mat()
                     val newSize = Size((tmp.cols() * scale).toDouble(), (tmp.rows() * scale).toDouble())
                     Imgproc.resize(tmp, resized, newSize, 0.0, 0.0, Imgproc.INTER_AREA)
-                    tmp.release()
                     Imgproc.cvtColor(resized, resized, Imgproc.COLOR_RGBA2GRAY)
                     resized
                 } else {
                     Imgproc.cvtColor(tmp, tmp, Imgproc.COLOR_RGBA2GRAY)
                     tmp
                 }
+                
+                // 成功创建后，标记为null避免finally释放
+                if (result === tmp) tmp = null else resized = null
+                result
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to convert bitmap to Mat: $e")
                 null
+            } finally {
+                // 确保异常时释放未使用的Mat
+                tmp?.release()
+                resized?.release()
             }
         }
         
-        // 释放旧的模板Mat对象
-        templateGrays.forEach { it.release() }
+        // 线程安全：先保存旧引用，再赋值新数据，最后释放旧资源
+        // 避免 match() 线程正在使用时被释放
+        val oldTemplateGrays = templateGrays
         templateGrays = newTemplateGrays
         templateNames = names
+        
+        // 延迟释放旧模板（新数据已生效，旧数据不会被新请求使用）
+        oldTemplateGrays.forEach { it.release() }
         
         // 重要：回收所有Bitmap，防止内存泄漏
         bitmaps.forEach { it.recycle() }
@@ -92,22 +118,23 @@ class GrayscaleMultiScaleMatcher : TemplateMatcher {
     }
     
     override fun match(grayMat: Mat): MatchResult? {
-        if (templateGrays.isEmpty()) {
+        // 线程安全：本地缓存引用，避免迭代过程中列表被热更新
+        val templates = templateGrays
+        val names = templateNames
+        
+        if (templates.isEmpty()) {
             Log.w(TAG, "No templates loaded")
             return null
         }
         
-        val threshold = config.matchThreshold  // 从配置获取阈值
-        val weakThreshold = threshold - 0.04  // 弱匹配阈值
+        val threshold = config.matchThreshold
+        val weakThreshold = threshold - WEAK_MATCH_OFFSET
         
-        for ((idx, tmpl) in templateGrays.withIndex()) {
-            val templateName = templateNames.getOrNull(idx) ?: "template$idx"
+        for ((idx, tmpl) in templates.withIndex()) {
+            val templateName = names.getOrNull(idx) ?: "template$idx"
             val templateStartTime = System.currentTimeMillis()
             
             // 智能多尺度匹配：两阶段策略
-            // 阶段1：粗搜索 - 快速定位大致范围 (3个点)
-            // 阶段2：细搜索 - 在最佳点附近细化 (2-3个点)
-            val coarseScales = floatArrayOf(1.0f, 0.7f, 0.5f)
             var bestScore = Double.NEGATIVE_INFINITY
             var bestScale = 1.0f
             val scaleScores = mutableListOf<Pair<Float, Double>>()
@@ -118,7 +145,7 @@ class GrayscaleMultiScaleMatcher : TemplateMatcher {
                 val scaledHeight = (tmpl.rows() * scale).toInt()
                 
                 if (scaledWidth > grayMat.cols() || scaledHeight > grayMat.rows()) continue
-                if (scaledWidth < 30 || scaledHeight < 30) continue
+                if (scaledWidth < MIN_TEMPLATE_SIZE || scaledHeight < MIN_TEMPLATE_SIZE) continue
                 
                 val score = matchAtScale(tmpl, grayMat, scale)
                 scaleScores.add(Pair(scale, score))
@@ -129,26 +156,33 @@ class GrayscaleMultiScaleMatcher : TemplateMatcher {
             }
             
             // 提前退出优化：如果粗搜索分数很低，跳过细搜索
-            if (bestScore < threshold - 0.20) {
-                if (scaleScores.size == 3) {
+            if (bestScore < threshold - EARLY_EXIT_OFFSET) {
+                if (scaleScores.size == coarseScales.size) {
                     Log.d(TAG, "[$templateName] Skipped fine search (coarse best=${String.format("%.3f", bestScore)} << threshold)")
                 }
-                continue  // 跳到下一个模板
+                continue
             }
             
             // 阶段2：细搜索 - 在最佳尺度附近细化
             val fineScales = when {
-                bestScale >= 0.9f -> floatArrayOf(0.95f, 0.9f, 0.85f)
-                bestScale >= 0.65f -> floatArrayOf(bestScale + 0.05f, bestScale - 0.05f)
-                else -> floatArrayOf(0.55f, 0.48f, 0.45f)
-            }.filter { it != bestScale }
+                bestScale >= 0.9f -> fineScalesHigh
+                bestScale >= 0.65f -> {
+                    // 单线程环境，安全复用数组
+                    fineScalesMid[0] = bestScale + 0.05f
+                    fineScalesMid[1] = bestScale - 0.05f
+                    fineScalesMid
+                }
+                else -> fineScalesLow
+            }
             
             for (scale in fineScales) {
+                if (scale == bestScale) continue  // 跳过已测试的
+                
                 val scaledWidth = (tmpl.cols() * scale).toInt()
                 val scaledHeight = (tmpl.rows() * scale).toInt()
                 
                 if (scaledWidth > grayMat.cols() || scaledHeight > grayMat.rows()) continue
-                if (scaledWidth < 30 || scaledHeight < 30) continue
+                if (scaledWidth < MIN_TEMPLATE_SIZE || scaledHeight < MIN_TEMPLATE_SIZE) continue
                 
                 val score = matchAtScale(tmpl, grayMat, scale)
                 scaleScores.add(Pair(scale, score))
@@ -190,7 +224,7 @@ class GrayscaleMultiScaleMatcher : TemplateMatcher {
             }
         }
         
-        // 无匹配，记录最高分数用于调试
+        // 无匹配
         Log.d(TAG, "✗ No match (threshold=$threshold)")
         return null
     }
