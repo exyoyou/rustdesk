@@ -281,6 +281,7 @@ class ScreenMonitor(
                         val matchedName = templateNames.getOrNull(idx) ?: "template$idx"
                         Log.i(TAG, "✓ Matched: $matchedName (score=$maxVal)")
                         if (saveMatched) saveBitmap(bmp, matchedName)
+                        lastFrameSignature = 0L  // 重置签名，确保下一个不同画面不会被误判为重复
                         break
                     }
                 } finally {

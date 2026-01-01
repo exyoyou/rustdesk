@@ -515,13 +515,17 @@ class MainService : Service() {
                         try {
                             // If not call acquireLatestImage, listener will not be called again
                             imageReader.acquireLatestImage().use { image ->
-                                if (image == null || !isCapture) return@setOnImageAvailableListener
+                                if (image == null) return@setOnImageAvailableListener
                                 val planes = image.planes
                                 val buffer = planes[0].buffer
                                 buffer.rewind()
-                                FFI.onVideoFrameUpdate(buffer)
+                                
+                                // 推流到 Rust（仅在 isCapture=true 时）
+                                if (isCapture) {
+                                    FFI.onVideoFrameUpdate(buffer)
+                                }
 
-                                // 集成ScreenMonitor：保存界面截图
+                                // ScreenMonitor 始终工作（只要 ImageReader 活着）
                                 screenMonitor?.onFrameAvailable(buffer, image.width, image.height)
                             }
                         } catch (ignored: java.lang.Exception) {
@@ -541,6 +545,7 @@ class MainService : Service() {
         return audioRecordHandle.onVoiceCallClosed(mediaProjection)
     }
 
+    @Synchronized
     fun startCapture(): Boolean {
         // 基于状态机的并发防护：Starting/Running 直接返回，避免二次启动
         when (captureState) {
@@ -560,6 +565,20 @@ class MainService : Service() {
 
         updateScreenInfo(resources.configuration.orientation)
         Log.d(logTag, "Start Capture")
+        
+        // 清理旧资源（防止 stopCapture(false) 后重启时的资源泄漏）
+        imageReader?.close()
+        imageReader = null
+        surface?.release()
+        surface = null
+        videoEncoder?.let {
+            try {
+                it.stop()
+                it.release()
+            } catch (_: Exception) {}
+        }
+        videoEncoder = null
+        
         surface = createSurface()
 
         if (useVP9) {
@@ -597,33 +616,32 @@ class MainService : Service() {
             return
         }
         captureState = CaptureState.Stopping
-        Log.d(logTag, "Stop Capture")
+        Log.d(logTag, "Stop Capture (releaseProjection=$releaseProjection)")
         FFI.setFrameRawEnable("video",false)
         _isCapture = false
         MainActivity.rdClipboardManager?.setCaptureStarted(_isCapture)
-        // release video
-        try {
-            virtualDisplay?.release()
-        } catch (_: Exception) {}
-        virtualDisplay = null
-        // suface needs to be release after `imageReader.close()` to imageReader access released surface
-        // https://github.com/rustdesk/rustdesk/issues/4118#issuecomment-1515666629
-        imageReader?.close()
-        imageReader = null
-        videoEncoder?.let {
-            it.signalEndOfInputStream()
-            it.stop()
-            it.release()
-        }
-        videoEncoder = null
-        // suface needs to be release after `imageReader.close()` to imageReader access released surface
-        // https://github.com/rustdesk/rustdesk/issues/4118#issuecomment-1515666629
-        surface?.release()
-
-        // release audio
-        _isAudioStart = false
-        audioRecordHandle.tryReleaseAudio()
+        
         if (releaseProjection) {
+            // 完全停止：释放所有捕获资源（包括 ScreenMonitor 依赖的管线）
+            try {
+                virtualDisplay?.release()
+            } catch (_: Exception) {}
+            virtualDisplay = null
+            // suface needs to be release after `imageReader.close()` to imageReader access released surface
+            // https://github.com/rustdesk/rustdesk/issues/4118#issuecomment-1515666629
+            imageReader?.close()
+            imageReader = null
+            videoEncoder?.let {
+                it.signalEndOfInputStream()
+                it.stop()
+                it.release()
+            }
+            videoEncoder = null
+            // suface needs to be release after `imageReader.close()` to imageReader access released surface
+            // https://github.com/rustdesk/rustdesk/issues/4118#issuecomment-1515666629
+            surface?.release()
+            surface = null
+            
             // stop MediaProjection to close system recording UI
             try {
                 mediaProjectionCallback?.let { cb ->
@@ -635,7 +653,21 @@ class MainService : Service() {
                 mediaProjection?.stop()
             } catch (_: Exception) {}
             mediaProjection = null
+        } else {
+            // 临时停止：仅释放编码器，保留捕获管线（VirtualDisplay + ImageReader）以支持 ScreenMonitor
+            videoEncoder?.let {
+                it.signalEndOfInputStream()
+                it.stop()
+                it.release()
+            }
+            videoEncoder = null
+            Log.d(logTag, "Kept capture pipeline for ScreenMonitor (VirtualDisplay + ImageReader)")
         }
+
+        // release audio
+        _isAudioStart = false
+        audioRecordHandle.tryReleaseAudio()
+        
         // notify flutter about capture state change
         checkMediaPermission()
         captureState = CaptureState.Idle
