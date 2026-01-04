@@ -77,6 +77,11 @@ class MainService : Service() {
     // 使用新的 MonitorService 替代旧的 ScreenMonitor
     private var monitorService: MonitorService? = null
 
+    // 防抖：记录上次请求 MediaProjection 的时间（避免短时间内重复请求）
+    @Volatile
+    private var lastMediaProjectionRequestTime: Long = 0L
+    private val mediaProjectionRequestDebounceMs: Long = 2000L  // 2秒内不重复请求
+
     @Keep
     @RequiresApi(Build.VERSION_CODES.N)
     fun rustPointerInput(kind: Int, mask: Int, x: Int, y: Int) {
@@ -163,11 +168,7 @@ class MainService : Service() {
                             // 仅在当前已在采集时才执行“清理并重启”，避免非录屏场景（如仅使用摄像头）误触发录屏
                             // 保留 MediaProjection 权限（不弹二次授权）
                             stopCapture(false)
-                            val ok = startCapture()
-                            if (!ok) {
-                                requestMediaProjection()
-                            }
-
+                            startCapture()  // 失败时由自动恢复机制处理，避免立即弹窗
                         }
                         onClientAuthorizedNotification(id, type, username, peerId)
                     } else {
@@ -489,7 +490,9 @@ class MainService : Service() {
                 val callback = object : MediaProjection.Callback() {
                     override fun onStop() {
                         Log.d(logTag, "MediaProjection onStop: system stopped capture")
-                        stopCapture()
+                        // System has already stopped MediaProjection, so we only clean up resources
+                        // without trying to stop it again
+                        stopCaptureAfterSystemStop()
                     }
                 }
                 mediaProjectionCallback = callback
@@ -529,6 +532,14 @@ class MainService : Service() {
     }
 
     private fun requestMediaProjection() {
+        // 防抖：避免短时间内重复请求权限（会导致多个 Activity 同时创建）
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastMediaProjectionRequestTime < mediaProjectionRequestDebounceMs) {
+            Log.w(logTag, "requestMediaProjection ignored: too soon after last request (${now - lastMediaProjectionRequestTime}ms ago)")
+            return
+        }
+        lastMediaProjectionRequestTime = now
+        
         val intent = Intent(this, PermissionRequestTransparentActivity::class.java).apply {
             action = ACT_REQUEST_MEDIA_PROJECTION
             flags = Intent.FLAG_ACTIVITY_NEW_TASK
@@ -705,6 +716,82 @@ class MainService : Service() {
         checkMediaPermission()
     }
 
+    /**
+     * 系统主动停止 MediaProjection 后的清理（不再尝试 stop MediaProjection）
+     */
+    @Synchronized
+    private fun stopCaptureAfterSystemStop() {
+        Log.d(logTag, "Stop Capture (system already stopped MediaProjection)")
+        FFI.setFrameRawEnable("video", false)
+        _isCapture = false
+        MainActivity.rdClipboardManager?.setCaptureStarted(_isCapture)
+        captureState = CaptureState.Stopping
+        
+        // Clean up resources without trying to stop MediaProjection
+        try {
+            virtualDisplay?.release()
+        } catch (_: Exception) {
+        }
+        virtualDisplay = null
+        
+        imageReader?.close()
+        imageReader = null
+        
+        videoEncoder?.let {
+            try {
+                it.signalEndOfInputStream()
+                it.stop()
+                it.release()
+            } catch (_: Exception) {
+            }
+        }
+        videoEncoder = null
+        
+        surface?.release()
+        surface = null
+        
+        // Unregister callback
+        try {
+            mediaProjectionCallback?.let { cb ->
+                mediaProjection?.unregisterCallback(cb)
+            }
+        } catch (_: Exception) {
+        }
+        mediaProjectionCallback = null
+        
+        // MediaProjection already stopped by system, just clear reference
+        mediaProjection = null
+        
+        // Release audio
+        _isAudioStart = false
+        audioRecordHandle.tryReleaseAudio()
+        
+        captureState = CaptureState.Idle
+        
+        // Notify Flutter state change (only once at the end)
+        checkMediaPermission()
+        
+        // Auto-recovery: 仅在 MonitorService 运行且 mainServer 活跃时才自动恢复
+        // 避免用户主动停止录屏后误弹权限请求
+        val needsRecovery = try {
+            monitorService != null && _isMainServer
+        } catch (_: Exception) {
+            false
+        }
+        
+        if (needsRecovery) {
+            serviceHandler?.postDelayed({
+                // 再次检查状态，避免延迟期间已经恢复或服务已停止
+                if (mediaProjection == null && !isCapture && _isMainServer) {
+                    Log.w(logTag, "Auto-requesting MediaProjection for service recovery")
+                    requestMediaProjection()
+                } else {
+                    Log.d(logTag, "Auto-recovery skipped: already recovered or service stopped")
+                }
+            }, 1000L)  // 延迟 1 秒，避免与其他启动流程冲突
+        }
+    }
+    
     @Synchronized
     fun stopCapture(releaseProjection: Boolean = true) {
         // Idempotent guard: if nothing to stop, just emit current state
