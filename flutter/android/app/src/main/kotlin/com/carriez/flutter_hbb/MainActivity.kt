@@ -17,7 +17,8 @@ import android.content.ClipboardManager
 import android.os.Bundle
 import android.os.Build
 import android.os.IBinder
-import com.youyou.monitor.Log
+import com.youyou.monitor.infra.logger.Log
+import com.youyou.monitor.MonitorService
 import android.view.WindowManager
 import android.media.MediaCodecInfo
 import android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
@@ -26,7 +27,6 @@ import android.media.MediaCodecList
 import org.json.JSONArray
 import org.json.JSONObject
 import com.hjq.permissions.XXPermissions
-import com.youyou.monitor.MonitorConfig
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -139,7 +139,7 @@ class MainActivity : FlutterActivity() {
             when (call.method) {
                 "getRootDirPath" -> {
                     try {
-                        val dir = MonitorConfig.getInstance().getRootDir().absolutePath
+                        val dir = MonitorService.getInstance().getRootDirPath()
                         result.success(dir)
                     } catch (e: Exception) {
                         result.error("-1", "Failed to get root dir: ${e.message}", null)

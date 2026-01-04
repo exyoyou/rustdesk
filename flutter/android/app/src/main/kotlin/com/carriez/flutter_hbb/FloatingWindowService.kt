@@ -14,7 +14,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.util.Log
+import com.youyou.monitor.infra.logger.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View

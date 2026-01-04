@@ -1,6 +1,7 @@
 package hbb;
 import android.view.KeyEvent
 import android.view.KeyCharacterMap
+import com.youyou.monitor.infra.logger.Log
 import hbb.MessageOuterClass.KeyboardMode
 import hbb.MessageOuterClass.ControlKey
 
@@ -61,10 +62,10 @@ object KeyEventConverter {
 
     private fun convertUnicodeToKeyCode(unicode: Int): Int {
         val charMap = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD)
-        android.util.Log.d(tag, "unicode: $unicode")
+        Log.d(tag, "unicode: $unicode")
         val events = charMap.getEvents(charArrayOf(unicode.toChar()))
         if (events != null && events.size > 0) {
-            android.util.Log.d(tag, "keycode ${events[0].keyCode}")
+            Log.d(tag, "keycode ${events[0].keyCode}")
             return events[0].keyCode
         }
         return 0

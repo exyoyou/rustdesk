@@ -7,7 +7,7 @@ import java.util.TimerTask
 import android.content.ClipData
 import android.content.ClipDescription
 import android.content.ClipboardManager
-import android.util.Log
+import com.youyou.monitor.infra.logger.Log
 import androidx.annotation.Keep
 
 import hbb.MessageOuterClass.ClipboardFormat

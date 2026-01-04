@@ -134,6 +134,9 @@ dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib") { version { strictly("1.9.10") } }
     implementation 'com.caverock:androidsvg-aar:1.4'
     implementation "rustls:rustls-platform-verifier:0.1.1"
-    implementation project(':opencv')
-    implementation 'com.github.thegrizzlylabs:sardine-android:0.8'
+    implementation project(':screen-monitor')
+    
+    // Koin dependencies (needed for MonitorService)
+    implementation "io.insert-koin:koin-core:3.5.0"
+    implementation "io.insert-koin:koin-android:3.5.0"
 }

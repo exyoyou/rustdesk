@@ -10,7 +10,7 @@ import android.media.projection.MediaProjection
 import androidx.annotation.RequiresApi
 import androidx.core.app.ActivityCompat
 import android.os.Build
-import android.util.Log
+import com.youyou.monitor.infra.logger.Log
 import kotlin.concurrent.thread
 import kotlin.jvm.Volatile
 
