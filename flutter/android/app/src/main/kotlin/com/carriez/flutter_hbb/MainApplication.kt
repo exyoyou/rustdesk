@@ -21,12 +21,20 @@ class MainApplication : Application() {
         Log.init(this)
         Log.d(TAG, "App start")
         
-        // 初始化新的 MonitorService（传入 deviceId 获取函数）
-        MonitorService.init(this) {
-            FFI.getMyId()
-        }
-        Log.d(TAG, "MonitorService initialized")
-        
         FFI.onAppStart(applicationContext)
+        
+        // 初始化 MonitorService（传入 deviceIdProvider 回调）
+        Log.d(TAG, "Before MonitorService.init()")
+        MonitorService.init(this) {
+            try {
+                val id = FFI.getMyId()
+                Log.w(TAG, "[TRACE] FFI.getMyId() returned: '$id' (length=${id.length})")
+                id
+            } catch (e: Exception) {
+                Log.e(TAG, "[TRACE] FFI.getMyId() threw exception: ${e.message}", e)
+                ""
+            }
+        }
+        Log.d(TAG, "After MonitorService.init()")
     }
 }
