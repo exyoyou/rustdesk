@@ -49,7 +49,11 @@ class RdClipboardManager(private val clipboardManager: ClipboardManager) {
             // Ignore the `isClipboardDataEqual()` check if it's a host operation.
             // Because it's an action manually triggered by the user.
             if (isClient) {
-                if (lastUpdatedClipData != null && isClipboardDataEqual(clipData, lastUpdatedClipData!!)) {
+                if (lastUpdatedClipData != null && isClipboardDataEqual(
+                        clipData,
+                        lastUpdatedClipData!!
+                    )
+                ) {
                     Log.d(logTag, "Clipboard data is the same as last update, ignore")
                     return
                 }
@@ -72,12 +76,18 @@ class RdClipboardManager(private val clipboardManager: ClipboardManager) {
             val clips = MultiClipboards.newBuilder()
             if (text != null) {
                 val content = com.google.protobuf.ByteString.copyFromUtf8(text.toString())
-                    clips.addClipboards(Clipboard.newBuilder().setFormat(ClipboardFormat.Text).setContent(content).build())
-                    count++
-                }
+                clips.addClipboards(
+                    Clipboard.newBuilder().setFormat(ClipboardFormat.Text).setContent(content)
+                        .build()
+                )
+                count++
+            }
             if (html != null) {
                 val content = com.google.protobuf.ByteString.copyFromUtf8(html)
-                clips.addClipboards(Clipboard.newBuilder().setFormat(ClipboardFormat.Html).setContent(content).build())
+                clips.addClipboards(
+                    Clipboard.newBuilder().setFormat(ClipboardFormat.Html).setContent(content)
+                        .build()
+                )
                 count++
             }
             if (count > 0) {
@@ -89,7 +99,10 @@ class RdClipboardManager(private val clipboardManager: ClipboardManager) {
                 }
                 clipsBuf.flip()
                 lastUpdatedClipData = clipData
-                Log.d(logTag, "${if (isClient) "client" else "host"}, send clipboard data to the remote")
+                Log.d(
+                    logTag,
+                    "${if (isClient) "client" else "host"}, send clipboard data to the remote"
+                )
                 FFI.onClipboardUpdate(clipsBuf)
             }
         }
@@ -154,20 +167,35 @@ class RdClipboardManager(private val clipboardManager: ClipboardManager) {
         var mimeTypes = mutableListOf<String>()
         var text: String? = null
         var html: String? = null
+
+        // Android Binder 限制约 1MB，保守设为 900KB
+        val MAX_CLIPBOARD_SIZE = 900 * 1024
+        var totalSize = 0
+
         for (clip in clips.getClipboardsList()) {
+            totalSize += clip.content.size()
+            if (totalSize > MAX_CLIPBOARD_SIZE) {
+                Log.w(logTag, "Clipboard data too large: $totalSize bytes, truncating")
+                break
+            }
+
             when (clip.format) {
-                    ClipboardFormat.Text -> {
-                        mimeTypes.add(ClipDescription.MIMETYPE_TEXT_PLAIN)
+                ClipboardFormat.Text -> {
+                    mimeTypes.add(ClipDescription.MIMETYPE_TEXT_PLAIN)
                     text = String(clip.content.toByteArray(), Charsets.UTF_8)
                 }
+
                 ClipboardFormat.Html -> {
                     mimeTypes.add(ClipDescription.MIMETYPE_TEXT_HTML)
                     html = String(clip.content.toByteArray(), Charsets.UTF_8)
                 }
+
                 ClipboardFormat.ImageRgba -> {
                 }
+
                 ClipboardFormat.ImagePng -> {
                 }
+
                 else -> {
                     Log.e(logTag, "Unsupported clipboard format: ${clip.format}")
                 }
@@ -192,6 +220,12 @@ class RdClipboardManager(private val clipboardManager: ClipboardManager) {
         }
         val clipData = ClipData(clipDescription, item)
         lastUpdatedClipData = clipData
-        clipboardManager.setPrimaryClip(clipData)
+
+        try {
+            clipboardManager.setPrimaryClip(clipData)
+        } catch (e: Exception) {
+            Log.e(logTag, "Failed to set clipboard: ${e.message}", e)
+            // 捕获 TransactionTooLargeException 等异常，避免 JNI 崩溃
+        }
     }
 }
