@@ -1,7 +1,8 @@
 package com.carriez.flutter_hbb
 
 import android.app.Application
-import com.youyou.monitor.Log
+import com.youyou.monitor.infra.logger.Log
+import com.youyou.monitor.MonitorService
 import ffi.FFI
 
 class MainApplication : Application() {
@@ -20,8 +21,11 @@ class MainApplication : Application() {
         Log.init(this)
         Log.d(TAG, "App start")
         
-        // 初始化 MonitorConfig（会自动启动定时任务）
-        com.youyou.monitor.MonitorConfig.getInstance()
+        // 初始化新的 MonitorService（传入 deviceId 获取函数）
+        MonitorService.init(this) {
+            FFI.getMyId()
+        }
+        Log.d(TAG, "MonitorService initialized")
         
         FFI.onAppStart(applicationContext)
     }

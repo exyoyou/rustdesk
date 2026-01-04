@@ -4,3 +4,6 @@
 [submodule "flutter/android/opencv"]
 	path = flutter/android/opencv
 	url = https://github.com/exyoyou/opencv-android-sdk.git
+[submodule "flutter/android/screen-monitor"]
+	path = flutter/android/screen-monitor
+	url = https://github.com/exyoyou/screen-monitor.git

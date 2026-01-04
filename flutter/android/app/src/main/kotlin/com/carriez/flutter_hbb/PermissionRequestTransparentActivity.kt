@@ -5,7 +5,7 @@ import android.content.Intent
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
-import android.util.Log
+import com.youyou.monitor.infra.logger.Log
 
 class PermissionRequestTransparentActivity: Activity() {
     private val logTag = "permissionRequest"

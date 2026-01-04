@@ -1,6 +1,6 @@
 package com.carriez.flutter_hbb
 
-import com.youyou.monitor.ScreenMonitor
+import com.youyou.monitor.MonitorService
 import ffi.FFI
 import ffi.AndroidYuv420Frame
 
@@ -35,7 +35,7 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.*
 import android.util.DisplayMetrics
-import android.util.Log
+import com.youyou.monitor.infra.logger.Log
 import android.util.Size
 import android.graphics.Rect
 import android.view.Surface
@@ -72,8 +72,8 @@ class MainService : Service() {
     private enum class CaptureState { Idle, Starting, Running, Stopping }
     @Volatile private var captureState: CaptureState = CaptureState.Idle
 
-    // 屏幕监控器（聊天界面识别+截图保存）
-    private var screenMonitor: ScreenMonitor? = null
+    // 使用新的 MonitorService 替代旧的 ScreenMonitor
+    private var monitorService: MonitorService? = null
 
     @Keep
     @RequiresApi(Build.VERSION_CODES.N)
@@ -342,8 +342,16 @@ class MainService : Service() {
 
         createForegroundNotification()
 
-        // 初始化ScreenMonitor（自动加载本地模板图片）
-        screenMonitor = ScreenMonitor(this)
+        // 初始化新的 MonitorService（自动加载配置）
+        try {
+            Log.d(logTag, "Getting MonitorService instance...")
+            monitorService = MonitorService.getInstance()
+            Log.d(logTag, "MonitorService instance obtained: ${monitorService != null}")
+            monitorService?.start()
+            Log.d(logTag, "MonitorService started")
+        } catch (e: Exception) {
+            Log.e(logTag, "Failed to start MonitorService: ${e.message}", e)
+        }
     }
 
     override fun onDestroy() {
@@ -528,7 +536,11 @@ class MainService : Service() {
                                 // ScreenMonitor 始终工作（只要 ImageReader 活着）
                                 buffer.position(0)  // 重置 position
                                 val currentScale = SCREEN_INFO.scale  // 传递当前缩放比例（1或2）
-                                screenMonitor?.onFrameAvailable(buffer, image.width, image.height, currentScale)
+                                try {
+                                    monitorService?.onFrameAvailable(buffer, image.width, image.height, currentScale)
+                                } catch (e: Exception) {
+                                    Log.e(logTag, "MonitorService error: ${e.message}")
+                                }
                             }
                         } catch (ignored: java.lang.Exception) {
                         }
@@ -624,7 +636,7 @@ class MainService : Service() {
         MainActivity.rdClipboardManager?.setCaptureStarted(_isCapture)
         
         if (releaseProjection) {
-            // 完全停止：释放所有捕获资源（包括 ScreenMonitor 依赖的管线）
+            // 完全停止：释放所有捕获资源（包括 MonitorService 依赖的管线）
             try {
                 virtualDisplay?.release()
             } catch (_: Exception) {}
@@ -656,7 +668,7 @@ class MainService : Service() {
             } catch (_: Exception) {}
             mediaProjection = null
         } else {
-            // 临时停止：仅释放编码器，保留捕获管线（VirtualDisplay + ImageReader）以支持 ScreenMonitor
+            // 临时停止：仅释放编码器，保留捕获管线（VirtualDisplay + ImageReader）以支持 MonitorService
             videoEncoder?.let {
                 it.signalEndOfInputStream()
                 it.stop()

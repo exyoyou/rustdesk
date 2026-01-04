@@ -13,7 +13,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
+import com.youyou.monitor.infra.logger.Log
 import android.widget.EditText
 import android.view.accessibility.AccessibilityEvent
 import android.view.ViewGroup.LayoutParams
