@@ -70,7 +70,9 @@ const val VIDEO_KEY_FRAME_RATE = 30
 class MainService : Service() {
     // 捕获状态机，防止并发/重复启动与交叉停止
     private enum class CaptureState { Idle, Starting, Running, Stopping }
-    @Volatile private var captureState: CaptureState = CaptureState.Idle
+
+    @Volatile
+    private var captureState: CaptureState = CaptureState.Idle
 
     // 使用新的 MonitorService 替代旧的 ScreenMonitor
     private var monitorService: MonitorService? = null
@@ -80,12 +82,16 @@ class MainService : Service() {
     fun rustPointerInput(kind: Int, mask: Int, x: Int, y: Int) {
         // turn on screen with LEFT_DOWN when screen off
         if (!powerManager.isInteractive && (kind == 0 || mask == LEFT_DOWN)) {
-            if (wakeLock.isHeld) {
-                Log.d(logTag, "Turn on Screen, WakeLock release")
-                wakeLock.release()
+            try {
+                if (wakeLock.isHeld) {
+                    Log.d(logTag, "Turn on Screen, WakeLock release")
+                    wakeLock.release()
+                }
+                Log.d(logTag, "Turn on Screen")
+                wakeLock.acquire(5000)
+            } catch (e: Exception) {
+                Log.e(logTag, "WakeLock acquire failed: ${e.message}")
             }
-            Log.d(logTag, "Turn on Screen")
-            wakeLock.acquire(5000)
         } else {
             when (kind) {
                 0 -> { // touch
@@ -144,13 +150,13 @@ class MainService : Service() {
                     var type = translate("Share screen")
                     if (isFileTransfer) {
                         type = translate("Transfer file")
-                        isCaptureModel =false
+                        isCaptureModel = false
                     } else if (isViewCamera) {
                         type = translate("View camera")
-                        isCaptureModel =false
+                        isCaptureModel = false
                     } else if (isTerminal) {
                         type = translate("Terminal")
-                        isCaptureModel =false
+                        isCaptureModel = false
                     }
                     if (authorized) {
                         if (isCaptureModel) {
@@ -355,6 +361,29 @@ class MainService : Service() {
     }
 
     override fun onDestroy() {
+        Log.d(logTag, "MainService onDestroy")
+
+        // onDestroy 是系统回调，正常应该由 destroy() -> stopSelf() 触发
+        // 这里仅作为最后的安全网，清理可能泄漏的资源
+
+        // 停止 HandlerThread（避免线程泄漏）
+        try {
+            serviceLooper?.quitSafely()
+            serviceLooper = null
+            serviceHandler = null
+        } catch (e: Exception) {
+            Log.e(logTag, "Failed to quit HandlerThread: ${e.message}")
+        }
+
+        // 关闭线程池（避免线程泄漏）
+        try {
+            if (!sendVP9Thread.isShutdown) {
+                sendVP9Thread.shutdown()
+            }
+        } catch (e: Exception) {
+            Log.e(logTag, "Failed to shutdown thread pool: ${e.message}")
+        }
+
         checkMediaPermission()
         stopService(Intent(this, FloatingWindowService::class.java))
         super.onDestroy()
@@ -400,7 +429,8 @@ class MainService : Service() {
                 dpi /= scale
             }
             // 仅当任一关键参数变化时才触发刷新
-            val changed = SCREEN_INFO.width != w || SCREEN_INFO.height != h || SCREEN_INFO.dpi != dpi || SCREEN_INFO.scale != scale
+            val changed =
+                SCREEN_INFO.width != w || SCREEN_INFO.height != h || SCREEN_INFO.dpi != dpi || SCREEN_INFO.scale != scale
             if (changed) {
                 SCREEN_INFO.width = w
                 SCREEN_INFO.height = h
@@ -413,7 +443,7 @@ class MainService : Service() {
                         // do NOT stop MediaProjection, only recycle video pipeline.
                         stopCapture(false)
                         FFI.refreshScreen()
-                        startCapture()
+                        recreatePipeline()  // 显式重建管线，而不是 startCapture()（复用逻辑）
                     } else {
                         // 非 Running 阶段，只做刷新同步，等待当前流程完成
                         FFI.refreshScreen()
@@ -487,7 +517,8 @@ class MainService : Service() {
                         requestMediaProjection()
                     }
                 }
-            } catch (_: Exception) {}
+            } catch (_: Exception) {
+            }
         }
         return START_NOT_STICKY // don't use sticky (auto restart), the new service (from auto restart) will lose control
     }
@@ -526,7 +557,7 @@ class MainService : Service() {
                                 if (image == null) return@setOnImageAvailableListener
                                 val planes = image.planes
                                 val buffer = planes[0].buffer
-                                
+
                                 // 推流到 Rust（仅在 isCapture=true 时）
                                 if (isCapture) {
                                     buffer.position(0)  // 重置 position
@@ -537,14 +568,20 @@ class MainService : Service() {
                                 buffer.position(0)  // 重置 position
                                 val currentScale = SCREEN_INFO.scale  // 传递当前缩放比例（1或2）
                                 try {
-                                    monitorService?.onFrameAvailable(buffer, image.width, image.height, currentScale)
+                                    monitorService?.onFrameAvailable(
+                                        buffer,
+                                        image.width,
+                                        image.height,
+                                        currentScale
+                                    )
                                 } catch (e: Exception) {
                                     Log.e(logTag, "MonitorService error: ${e.message}")
                                 }
                             }
-                        } catch (ignored: java.lang.Exception) {
+                        } catch (e: java.lang.Exception) {
+                            Log.w(logTag, "ImageReader callback error: ${e.message}")
                         }
-                    }, serviceHandler)
+                    }, serviceHandler ?: Handler(Looper.getMainLooper()))
                 }
             Log.d(logTag, "ImageReader.setOnImageAvailableListener done")
             imageReader?.surface
@@ -568,6 +605,7 @@ class MainService : Service() {
                 Log.w(logTag, "startCapture ignored: currently stopping")
                 return false
             }
+
             CaptureState.Idle -> {}
         }
         captureState = CaptureState.Starting
@@ -579,20 +617,65 @@ class MainService : Service() {
 
         updateScreenInfo(resources.configuration.orientation)
         Log.d(logTag, "Start Capture")
-        
-        // 清理旧资源（防止 stopCapture(false) 后重启时的资源泄漏）
-        imageReader?.close()
-        imageReader = null
-        surface?.release()
-        surface = null
-        videoEncoder?.let {
-            try {
-                it.stop()
-                it.release()
-            } catch (_: Exception) {}
+
+        // 管线健康且已存在，仅启用推流（复用管线，不重建，避免中断 MonitorService）
+        if (imageReader != null && virtualDisplay != null && surface != null) {
+            Log.d(logTag, "Reuse existing capture pipeline for MonitorService")
+            _isCapture = true
+            captureState = CaptureState.Running
+            FFI.setFrameRawEnable("video", true)
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                if (!audioRecordHandle.createAudioRecorder(false, mediaProjection)) {
+                    Log.d(logTag, "createAudioRecorder fail")
+                } else {
+                    Log.d(logTag, "audio recorder start")
+                    audioRecordHandle.startAudioRecorder()
+                }
+            }
+            checkMediaPermission()
+            MainActivity.rdClipboardManager?.setCaptureStarted(_isCapture)
+            return true
         }
+
+        // 管线不存在或已损坏，需要重建
+        return recreatePipeline()
+    }
+
+    @Synchronized
+    private fun recreatePipeline(): Boolean {
+        Log.d(logTag, "Recreate capture pipeline")
+        if (mediaProjection == null) {
+            Log.w(logTag, "recreatePipeline fail, mediaProjection is null")
+            captureState = CaptureState.Idle
+            return false
+        }
+
+        // SAFETY: 先暂停 VirtualDisplay，停止新帧生成
+        virtualDisplay?.setSurface(null)
+
+        // SAFETY: 延迟关闭旧资源，避免 Handler 线程 Use-After-Free
+        val oldImageReader = imageReader
+        val oldSurface = surface
+        val oldVideoEncoder = videoEncoder
+        imageReader = null
+        surface = null
         videoEncoder = null
-        
+
+        serviceHandler?.postDelayed({
+            try {
+                oldImageReader?.close()
+                oldSurface?.release()
+                oldVideoEncoder?.let {
+                    it.stop()
+                    it.release()
+                }
+            } catch (e: Exception) {
+                Log.w(logTag, "Delayed resource cleanup failed: $e")
+            }
+        }, 200L)
+
+        // 创建新管线
         surface = createSurface()
 
         if (useVP9) {
@@ -612,7 +695,7 @@ class MainService : Service() {
         checkMediaPermission()
         _isCapture = true
         captureState = CaptureState.Running
-        FFI.setFrameRawEnable("video",true)
+        FFI.setFrameRawEnable("video", true)
         MainActivity.rdClipboardManager?.setCaptureStarted(_isCapture)
         return true
     }
@@ -625,21 +708,24 @@ class MainService : Service() {
     @Synchronized
     fun stopCapture(releaseProjection: Boolean = true) {
         // Idempotent guard: if nothing to stop, just emit current state
-        if (!_isCapture && mediaProjection == null && virtualDisplay == null && imageReader == null && videoEncoder == null) {
+        val hasResources = _isCapture || mediaProjection != null || virtualDisplay != null ||
+                imageReader != null || videoEncoder != null
+        if (!hasResources) {
             checkMediaPermission()
             return
         }
         captureState = CaptureState.Stopping
         Log.d(logTag, "Stop Capture (releaseProjection=$releaseProjection)")
-        FFI.setFrameRawEnable("video",false)
+        FFI.setFrameRawEnable("video", false)
         _isCapture = false
         MainActivity.rdClipboardManager?.setCaptureStarted(_isCapture)
-        
+
         if (releaseProjection) {
             // 完全停止：释放所有捕获资源（包括 MonitorService 依赖的管线）
             try {
                 virtualDisplay?.release()
-            } catch (_: Exception) {}
+            } catch (_: Exception) {
+            }
             virtualDisplay = null
             // suface needs to be release after `imageReader.close()` to imageReader access released surface
             // https://github.com/rustdesk/rustdesk/issues/4118#issuecomment-1515666629
@@ -655,17 +741,19 @@ class MainService : Service() {
             // https://github.com/rustdesk/rustdesk/issues/4118#issuecomment-1515666629
             surface?.release()
             surface = null
-            
+
             // stop MediaProjection to close system recording UI
             try {
                 mediaProjectionCallback?.let { cb ->
                     mediaProjection?.unregisterCallback(cb)
                 }
-            } catch (_: Exception) {}
+            } catch (_: Exception) {
+            }
             mediaProjectionCallback = null
             try {
                 mediaProjection?.stop()
-            } catch (_: Exception) {}
+            } catch (_: Exception) {
+            }
             mediaProjection = null
         } else {
             // 临时停止：仅释放编码器，保留捕获管线（VirtualDisplay + ImageReader）以支持 MonitorService
@@ -681,7 +769,7 @@ class MainService : Service() {
         // release audio
         _isAudioStart = false
         audioRecordHandle.tryReleaseAudio()
-        
+
         // notify flutter about capture state change
         checkMediaPermission()
         captureState = CaptureState.Idle
@@ -691,6 +779,14 @@ class MainService : Service() {
         Log.d(logTag, "destroy service")
         _isMainServer = false
         _isAudioStart = false
+
+        // 停止 MonitorService
+        try {
+            monitorService?.stop()
+            monitorService = null
+        } catch (e: Exception) {
+            Log.e(logTag, "Failed to stop MonitorService in destroy: ${e.message}")
+        }
 
         stopCapture()
 
@@ -708,19 +804,17 @@ class MainService : Service() {
 
     fun checkMediaPermission(): Boolean {
         // Report capture status as `media`, and server status as `server`
-        Handler(Looper.getMainLooper()).post {
+        // 优化：使用同一个 Handler 避免重复创建
+        val mainHandler = Handler(Looper.getMainLooper())
+        mainHandler.post {
             MainActivity.flutterMethodChannel?.invokeMethod(
                 "on_state_changed",
                 mapOf("name" to "media", "value" to isCapture.toString())
             )
-        }
-        Handler(Looper.getMainLooper()).post {
             MainActivity.flutterMethodChannel?.invokeMethod(
                 "on_state_changed",
                 mapOf("name" to "server", "value" to isMainServer.toString())
             )
-        }
-        Handler(Looper.getMainLooper()).post {
             MainActivity.flutterMethodChannel?.invokeMethod(
                 "on_state_changed",
                 mapOf("name" to "input", "value" to InputService.isOpen.toString())
@@ -756,7 +850,17 @@ class MainService : Service() {
     private fun createOrSetVirtualDisplay(mp: MediaProjection, s: Surface) {
         try {
             virtualDisplay?.let {
-                it.resize(SCREEN_INFO.width, SCREEN_INFO.height, SCREEN_INFO.dpi)
+                // 优化：仅在尺寸或 DPI 变化时才调用 resize（避免不必要的系统调用）
+                val displayMetrics = it.display?.let { display ->
+                    android.util.DisplayMetrics().apply { display.getMetrics(this) }
+                }
+                val needResize = displayMetrics == null ||
+                        displayMetrics.widthPixels != SCREEN_INFO.width ||
+                        displayMetrics.heightPixels != SCREEN_INFO.height ||
+                        displayMetrics.densityDpi != SCREEN_INFO.dpi
+                if (needResize) {
+                    it.resize(SCREEN_INFO.width, SCREEN_INFO.height, SCREEN_INFO.dpi)
+                }
                 it.setSurface(s)
             } ?: let {
                 virtualDisplay = mp.createVirtualDisplay(
