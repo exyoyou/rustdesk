@@ -35,8 +35,7 @@
         android:label="PingerLoveFamily"
         android:requestLegacyExternalStorage="true"
         android:roundIcon="@mipmap/ic_launcher"
-        android:supportsRtl="true"
-        android:networkSecurityConfig="@xml/network_security_config">
+        android:supportsRtl="true">
 
         <receiver
             android:name=".BootReceiver"
