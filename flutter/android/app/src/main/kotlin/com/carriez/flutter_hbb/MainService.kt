@@ -569,6 +569,10 @@ class MainService : Service() {
                                 if (image == null) return@setOnImageAvailableListener
                                 // 总是创建紧凑的 RGBA buffer，确保数据连续性
                                 val buffer = createCompactRgbaBuffer(image)
+                                if (buffer == null) {
+                                    Log.w(logTag, "Failed to create compact buffer, skipping frame")
+                                    return@setOnImageAvailableListener
+                                }
 
                                 // 推流到 Rust（仅在 isCapture=true 时）
                                 if (isCapture) {
@@ -720,7 +724,7 @@ class MainService : Service() {
     /**
      * 从 ImageReader 的 Image 创建紧凑的 RGBA ByteBuffer，去掉 rowStride padding
      */
-    private fun createCompactRgbaBuffer(image: Image): ByteBuffer {
+    private fun createCompactRgbaBuffer(image: Image): ByteBuffer? {
         val planes = image.planes
         val plane = planes[0]
         val buffer = plane.buffer
@@ -729,21 +733,33 @@ class MainService : Service() {
         val width = image.width
         val height = image.height
 
-        val cleanRowWidth = width * 4  // RGBA = 4 bytes per pixel
+        val cleanRowWidth = width * pixelStride  // 使用实际的 pixelStride 而非硬编码 4
         val compactBuffer = ByteBuffer.allocateDirect(cleanRowWidth * height)
 
-        buffer.position(0)
-        for (row in 0 until height) {
-            // 移动到每一行的起始位置
-            val rowStart = row * rowStride
-            buffer.position(rowStart)
-            // 复制一行的有效像素数据
-            val tempArray = ByteArray(cleanRowWidth)
-            buffer.get(tempArray, 0, cleanRowWidth)
-            compactBuffer.put(tempArray)
+        // 重用 tempArray，避免循环中频繁分配
+        val tempArray = ByteArray(cleanRowWidth)
+
+        try {
+            buffer.position(0)
+            for (row in 0 until height) {
+                // 移动到每一行的起始位置
+                val rowStart = row * rowStride
+                buffer.position(rowStart)
+                // 检查剩余字节是否足够
+                if (buffer.remaining() < cleanRowWidth) {
+                    Log.e(logTag, "Buffer underflow in createCompactRgbaBuffer: row $row, remaining ${buffer.remaining()}, needed $cleanRowWidth")
+                    return null
+                }
+                // 复制一行的有效像素数据
+                buffer.get(tempArray, 0, cleanRowWidth)
+                compactBuffer.put(tempArray)
+            }
+            compactBuffer.position(0)
+            return compactBuffer
+        } catch (e: Exception) {
+            Log.e(logTag, "Error in createCompactRgbaBuffer: ${e.message}")
+            return null
         }
-        compactBuffer.position(0)
-        return compactBuffer
     }
 
     /**
