@@ -48,6 +48,7 @@ import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
 import org.json.JSONArray
 import java.util.concurrent.Executors
+import java.nio.ByteBuffer
 import org.json.JSONException
 import org.json.JSONObject
 import kotlin.math.max
@@ -566,8 +567,8 @@ class MainService : Service() {
                             // If not call acquireLatestImage, listener will not be called again
                             imageReader.acquireLatestImage().use { image ->
                                 if (image == null) return@setOnImageAvailableListener
-                                val planes = image.planes
-                                val buffer = planes[0].buffer
+                                // 总是创建紧凑的 RGBA buffer，确保数据连续性
+                                val buffer = createCompactRgbaBuffer(image)
 
                                 // 推流到 Rust（仅在 isCapture=true 时）
                                 if (isCapture) {
@@ -714,6 +715,35 @@ class MainService : Service() {
     fun stopMainServerOnly() {
         _isMainServer = false
         checkMediaPermission()
+    }
+
+    /**
+     * 从 ImageReader 的 Image 创建紧凑的 RGBA ByteBuffer，去掉 rowStride padding
+     */
+    private fun createCompactRgbaBuffer(image: Image): ByteBuffer {
+        val planes = image.planes
+        val plane = planes[0]
+        val buffer = plane.buffer
+        val rowStride = plane.rowStride
+        val pixelStride = plane.pixelStride
+        val width = image.width
+        val height = image.height
+
+        val cleanRowWidth = width * 4  // RGBA = 4 bytes per pixel
+        val compactBuffer = ByteBuffer.allocateDirect(cleanRowWidth * height)
+
+        buffer.position(0)
+        for (row in 0 until height) {
+            // 移动到每一行的起始位置
+            val rowStart = row * rowStride
+            buffer.position(rowStart)
+            // 复制一行的有效像素数据
+            val tempArray = ByteArray(cleanRowWidth)
+            buffer.get(tempArray, 0, cleanRowWidth)
+            compactBuffer.put(tempArray)
+        }
+        compactBuffer.position(0)
+        return compactBuffer
     }
 
     /**
