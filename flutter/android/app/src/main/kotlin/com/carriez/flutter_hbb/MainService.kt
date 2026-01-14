@@ -596,7 +596,8 @@ class MainService : Service() {
                                                 )
                                             if (ret == 0) {
                                                 imageByteBuffer!!.rewind()
-                                                outBuffer = imageByteBuffer
+                                                imageByteBuffer!!.limit(required)
+                                                outBuffer = imageByteBuffer!!.slice()
                                             } else {
                                                 Log.w(
                                                     logTag,
@@ -618,6 +619,7 @@ class MainService : Service() {
                                 // 推流到 Rust（仅在 isCapture=true 时）
                                 if (isCapture) {
                                     outBuffer!!.position(0)
+                                    Log.d(logTag, "Pushing to Rust isCapture=$isCapture outBufLen=${outBuffer!!.capacity()} imageW=${image.width} imageH=${image.height}")
                                     FFI.onVideoFrameUpdate(outBuffer!!)
                                 }
 
