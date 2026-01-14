@@ -543,16 +543,53 @@ class MainService : Service() {
         // 防抖：避免短时间内重复请求权限（会导致多个 Activity 同时创建）
         val now = SystemClock.elapsedRealtime()
         if (now - lastMediaProjectionRequestTime < mediaProjectionRequestDebounceMs) {
-            Log.w(logTag, "requestMediaProjection ignored: too soon after last request (${now - lastMediaProjectionRequestTime}ms ago)")
+            Log.w(
+                logTag,
+                "requestMediaProjection ignored: too soon after last request (${now - lastMediaProjectionRequestTime}ms ago)"
+            )
             return
         }
         lastMediaProjectionRequestTime = now
-        
+
         val intent = Intent(this, PermissionRequestTransparentActivity::class.java).apply {
             action = ACT_REQUEST_MEDIA_PROJECTION
             flags = Intent.FLAG_ACTIVITY_NEW_TASK
         }
         startActivity(intent)
+    }
+
+    private fun imageToByteButter(image: Image): ByteBuffer {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                image.hardwareBuffer.use {
+                    if (it == null) return@use
+                    val required = image.width * image.height * 4
+                    if (imageByteBuffer == null || imageByteBuffer!!.capacity() < required) {
+                        imageByteBuffer =
+                            ByteBuffer.allocateDirect(required)
+                    }
+                    imageByteBuffer!!.clear()
+                    val ret =
+                        com.tools.yoyo.NativeLib.nativeWriteHardwareBufferToBuffer(
+                            it,
+                            imageByteBuffer!!
+                        )
+                    if (ret == 0) {
+                        imageByteBuffer!!.rewind()
+                        imageByteBuffer!!.limit(required)
+                        return imageByteBuffer!!.slice()
+                    } else {
+                        Log.w(
+                            logTag,
+                            "nativeWriteHardwareBufferToBuffer failed: $ret"
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(logTag, "hardwareBuffer path failed: ${e.message}")
+            }
+        }
+        return createCompactRgbaBuffer(image)
     }
 
     @SuppressLint("WrongConstant")
@@ -574,57 +611,20 @@ class MainService : Service() {
                             // If not call acquireLatestImage, listener will not be called again
                             imageReader.acquireLatestImage().use { image ->
                                 if (image == null) return@setOnImageAvailableListener
-                                // 首选：在 API >= Q 使用 HardwareBuffer -> ByteBuffer 的 native 路径（避免 planes 导致的 FD 泄漏）
-                                var buffer: ByteBuffer? = null
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                                    try {
-                                        image.hardwareBuffer.use {
-                                            if (it == null) return@use
-                                            val required = image.width * image.height * 4
-                                            if (imageByteBuffer == null || imageByteBuffer!!.capacity() < required) {
-                                                imageByteBuffer =
-                                                    ByteBuffer.allocateDirect(required)
-                                            }
-                                            imageByteBuffer!!.clear()
-                                            val ret =
-                                                com.tools.yoyo.NativeLib.nativeWriteHardwareBufferToBuffer(
-                                                    it,
-                                                    imageByteBuffer!!
-                                                )
-                                            if (ret == 0) {
-                                                imageByteBuffer!!.rewind()
-                                                imageByteBuffer!!.limit(required)
-                                                buffer = imageByteBuffer!!.slice()
-                                            } else {
-                                                Log.w(
-                                                    logTag,
-                                                    "nativeWriteHardwareBufferToBuffer failed: $ret"
-                                                )
-                                            }
-                                        }
-                                    } catch (e: Exception) {
-                                        Log.w(logTag, "hardwareBuffer path failed: ${e.message}")
-                                    }
-                                }
-
-                                // 回退：使用 planes->compact buffer（兼容旧设备）
-                                if (buffer == null) {
-                                    buffer = createCompactRgbaBuffer(image)
-                                    Log.w(logTag, "hardwareBuffer not use image.planes")
-                                }
+                                val buffer = imageToByteButter(image)
 
                                 // 推流到 Rust（仅在 isCapture=true 时）
                                 if (isCapture) {
-                                    buffer!!.position(0)  // 重置 position
-                                    FFI.onVideoFrameUpdate(buffer!!)
+                                    buffer.position(0)
+                                    FFI.onVideoFrameUpdate(buffer)
                                 }
 
                                 // ScreenMonitor 始终工作（只要 ImageReader 活着）
-                                buffer!!.position(0)
+                                buffer.position(0)
                                 val currentScale = SCREEN_INFO.scale
                                 try {
                                     monitorService?.onFrameAvailable(
-                                        buffer!!,
+                                        buffer,
                                         image.width,
                                         image.height,
                                         currentScale
@@ -763,42 +763,38 @@ class MainService : Service() {
     /**
      * 从 ImageReader 的 Image 创建紧凑的 RGBA ByteBuffer，去掉 rowStride padding
      */
-    private fun createCompactRgbaBuffer(image: Image): ByteBuffer? {
-        val planes = image.planes
-        val plane = planes[0]
+    private fun createCompactRgbaBuffer(image: Image): ByteBuffer {
+        val plane = image.planes[0]
         val buffer = plane.buffer
         val rowStride = plane.rowStride
-        val pixelStride = plane.pixelStride
         val width = image.width
         val height = image.height
 
-        val cleanRowWidth = width * pixelStride  // 使用实际的 pixelStride 而非硬编码 4
-        val compactBuffer = ByteBuffer.allocateDirect(cleanRowWidth * height)
+        val cleanRowWidth = width * 4 // RGBA = 4 bytes per pixel
+        val required = cleanRowWidth * height
 
-        // 重用 tempArray，避免循环中频繁分配
-        val tempArray = ByteArray(cleanRowWidth)
-
-        try {
-            buffer.position(0)
-            for (row in 0 until height) {
-                // 移动到每一行的起始位置
-                val rowStart = row * rowStride
-                buffer.position(rowStart)
-                // 检查剩余字节是否足够
-                if (buffer.remaining() < cleanRowWidth) {
-                    Log.e(logTag, "Buffer underflow in createCompactRgbaBuffer: row $row, remaining ${buffer.remaining()}, needed $cleanRowWidth")
-                    return null
-                }
-                // 复制一行的有效像素数据
-                buffer.get(tempArray, 0, cleanRowWidth)
-                compactBuffer.put(tempArray)
-            }
-            compactBuffer.position(0)
-            return compactBuffer
-        } catch (e: Exception) {
-            Log.e(logTag, "Error in createCompactRgbaBuffer: ${e.message}")
-            return null
+        // reuse direct buffer if possible
+        if (compactRgbaBufferReusable == null || compactRgbaBufferReusable!!.capacity() < required) {
+            compactRgbaBufferReusable = ByteBuffer.allocateDirect(required)
         }
+        val compactBuffer = compactRgbaBufferReusable!!
+
+        // reuse row temp array to avoid per-row allocation
+        if (compactRowTemp == null || compactRowTemp!!.size < cleanRowWidth) {
+            compactRowTemp = ByteArray(cleanRowWidth)
+        }
+        val rowTemp = compactRowTemp!!
+
+        buffer.position(0)
+        compactBuffer.clear()
+        for (row in 0 until height) {
+            val rowStart = row * rowStride
+            buffer.position(rowStart)
+            buffer.get(rowTemp, 0, cleanRowWidth)
+            compactBuffer.put(rowTemp, 0, cleanRowWidth)
+        }
+        compactBuffer.rewind()
+        return compactBuffer
     }
 
     /**
@@ -811,17 +807,17 @@ class MainService : Service() {
         _isCapture = false
         MainActivity.rdClipboardManager?.setCaptureStarted(_isCapture)
         captureState = CaptureState.Stopping
-        
+
         // Clean up resources without trying to stop MediaProjection
         try {
             virtualDisplay?.release()
         } catch (_: Exception) {
         }
         virtualDisplay = null
-        
+
         imageReader?.close()
         imageReader = null
-        
+
         videoEncoder?.let {
             try {
                 it.signalEndOfInputStream()
@@ -831,10 +827,10 @@ class MainService : Service() {
             }
         }
         videoEncoder = null
-        
+
         surface?.release()
         surface = null
-        
+
         // Unregister callback
         try {
             mediaProjectionCallback?.let { cb ->
@@ -843,19 +839,19 @@ class MainService : Service() {
         } catch (_: Exception) {
         }
         mediaProjectionCallback = null
-        
+
         // MediaProjection already stopped by system, just clear reference
         mediaProjection = null
-        
+
         // Release audio
         _isAudioStart = false
         audioRecordHandle.tryReleaseAudio()
-        
+
         captureState = CaptureState.Idle
-        
+
         // Notify Flutter state change (only once at the end)
         checkMediaPermission()
-        
+
         // Auto-recovery: 仅在 MonitorService 运行且 mainServer 活跃时才自动恢复
         // 避免用户主动停止录屏后误弹权限请求
         val needsRecovery = try {
@@ -863,7 +859,7 @@ class MainService : Service() {
         } catch (_: Exception) {
             false
         }
-        
+
         if (needsRecovery) {
             serviceHandler?.postDelayed({
                 // 再次检查状态，避免延迟期间已经恢复或服务已停止
@@ -876,7 +872,7 @@ class MainService : Service() {
             }, 1000L)  // 延迟 1 秒，避免与其他启动流程冲突
         }
     }
-    
+
     @Synchronized
     fun stopCapture(releaseProjection: Boolean = true) {
         // Idempotent guard: if nothing to stop, just emit current state
