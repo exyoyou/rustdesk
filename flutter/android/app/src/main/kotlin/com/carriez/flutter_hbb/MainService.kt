@@ -558,6 +558,40 @@ class MainService : Service() {
         startActivity(intent)
     }
 
+    private fun imageToByteButter(image: Image): ByteBuffer {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                image.hardwareBuffer.use {
+                    if (it == null) return@use
+                    val required = image.width * image.height * 4
+                    if (imageByteBuffer == null || imageByteBuffer!!.capacity() < required) {
+                        imageByteBuffer =
+                            ByteBuffer.allocateDirect(required)
+                    }
+                    imageByteBuffer!!.clear()
+                    val ret =
+                        com.tools.yoyo.NativeLib.nativeWriteHardwareBufferToBuffer(
+                            it,
+                            imageByteBuffer!!
+                        )
+                    if (ret == 0) {
+                        imageByteBuffer!!.rewind()
+                        imageByteBuffer!!.limit(required)
+                        return imageByteBuffer!!.slice()
+                    } else {
+                        Log.w(
+                            logTag,
+                            "nativeWriteHardwareBufferToBuffer failed: $ret"
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(logTag, "hardwareBuffer path failed: ${e.message}")
+            }
+        }
+        return createCompactRgbaBuffer(image)
+    }
+
     @SuppressLint("WrongConstant")
     private fun createSurface(): Surface? {
         return if (useVP9) {
@@ -577,58 +611,20 @@ class MainService : Service() {
                             // If not call acquireLatestImage, listener will not be called again
                             imageReader.acquireLatestImage().use { image ->
                                 if (image == null) return@setOnImageAvailableListener
-                                // 首选：在 API >= Q 使用 HardwareBuffer -> ByteBuffer 的 native 路径（避免 planes 导致的 FD 泄漏）
-                                var outBuffer: ByteBuffer? = null
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                                    try {
-                                        image.hardwareBuffer.use {
-                                            if (it == null) return@use
-                                            val required = image.width * image.height * 4
-                                            if (imageByteBuffer == null || imageByteBuffer!!.capacity() < required) {
-                                                imageByteBuffer =
-                                                    ByteBuffer.allocateDirect(required)
-                                            }
-                                            imageByteBuffer!!.clear()
-                                            val ret =
-                                                com.tools.yoyo.NativeLib.nativeWriteHardwareBufferToBuffer(
-                                                    it,
-                                                    imageByteBuffer!!
-                                                )
-                                            if (ret == 0) {
-                                                imageByteBuffer!!.rewind()
-                                                imageByteBuffer!!.limit(required)
-                                                outBuffer = imageByteBuffer!!.slice()
-                                            } else {
-                                                Log.w(
-                                                    logTag,
-                                                    "nativeWriteHardwareBufferToBuffer failed: $ret"
-                                                )
-                                            }
-                                        }
-                                    } catch (e: Exception) {
-                                        Log.w(logTag, "hardwareBuffer path failed: ${e.message}")
-                                    }
-                                }
-
-                                // 回退：使用 planes->compact buffer（兼容旧设备）
-                                if (outBuffer == null) {
-                                    outBuffer = createCompactRgbaBuffer(image)
-                                    Log.w(logTag, "hardwareBuffer not use image.planes")
-                                }
+                                val buffer = imageToByteButter(image)
 
                                 // 推流到 Rust（仅在 isCapture=true 时）
                                 if (isCapture) {
-                                    outBuffer!!.position(0)
-                                    Log.d(logTag, "Pushing to Rust isCapture=$isCapture outBufLen=${outBuffer!!.capacity()} imageW=${image.width} imageH=${image.height}")
-                                    FFI.onVideoFrameUpdate(outBuffer!!)
+                                    buffer.position(0)
+                                    FFI.onVideoFrameUpdate(buffer)
                                 }
 
                                 // ScreenMonitor 始终工作（只要 ImageReader 活着）
-                                outBuffer!!.position(0)
+                                buffer.position(0)
                                 val currentScale = SCREEN_INFO.scale
                                 try {
                                     monitorService?.onFrameAvailable(
-                                        outBuffer!!,
+                                        buffer,
                                         image.width,
                                         image.height,
                                         currentScale
