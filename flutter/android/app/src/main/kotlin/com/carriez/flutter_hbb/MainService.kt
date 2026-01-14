@@ -301,6 +301,13 @@ class MainService : Service() {
     private var imageReader: ImageReader? = null
     private var virtualDisplay: VirtualDisplay? = null
 
+    // Reusable direct buffer for HardwareBuffer -> ByteBuffer copy
+    private var imageByteBuffer: ByteBuffer? = null
+
+    // Reusable direct buffer and temp row array for planes->compact conversion
+    private var compactRgbaBufferReusable: ByteBuffer? = null
+    private var compactRowTemp: ByteArray? = null
+
     // camera
     private var cameraDevice: CameraDevice? = null
     private var cameraSession: CameraCaptureSession? = null
@@ -567,25 +574,57 @@ class MainService : Service() {
                             // If not call acquireLatestImage, listener will not be called again
                             imageReader.acquireLatestImage().use { image ->
                                 if (image == null) return@setOnImageAvailableListener
-                                // 总是创建紧凑的 RGBA buffer，确保数据连续性
-                                val buffer = createCompactRgbaBuffer(image)
+                                // 首选：在 API >= Q 使用 HardwareBuffer -> ByteBuffer 的 native 路径（避免 planes 导致的 FD 泄漏）
+                                var buffer: ByteBuffer? = null
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                    try {
+                                        image.hardwareBuffer.use {
+                                            if (it == null) return@use
+                                            val required = image.width * image.height * 4
+                                            if (imageByteBuffer == null || imageByteBuffer!!.capacity() < required) {
+                                                imageByteBuffer =
+                                                    ByteBuffer.allocateDirect(required)
+                                            }
+                                            imageByteBuffer!!.clear()
+                                            val ret =
+                                                com.tools.yoyo.NativeLib.nativeWriteHardwareBufferToBuffer(
+                                                    it,
+                                                    imageByteBuffer!!
+                                                )
+                                            if (ret == 0) {
+                                                imageByteBuffer!!.rewind()
+                                                imageByteBuffer!!.limit(required)
+                                                buffer = imageByteBuffer!!.slice()
+                                            } else {
+                                                Log.w(
+                                                    logTag,
+                                                    "nativeWriteHardwareBufferToBuffer failed: $ret"
+                                                )
+                                            }
+                                        }
+                                    } catch (e: Exception) {
+                                        Log.w(logTag, "hardwareBuffer path failed: ${e.message}")
+                                    }
+                                }
+
+                                // 回退：使用 planes->compact buffer（兼容旧设备）
                                 if (buffer == null) {
-                                    Log.w(logTag, "Failed to create compact buffer, skipping frame")
-                                    return@setOnImageAvailableListener
+                                    buffer = createCompactRgbaBuffer(image)
+                                    Log.w(logTag, "hardwareBuffer not use image.planes")
                                 }
 
                                 // 推流到 Rust（仅在 isCapture=true 时）
                                 if (isCapture) {
-                                    buffer.position(0)  // 重置 position
-                                    FFI.onVideoFrameUpdate(buffer)
+                                    buffer!!.position(0)  // 重置 position
+                                    FFI.onVideoFrameUpdate(buffer!!)
                                 }
 
                                 // ScreenMonitor 始终工作（只要 ImageReader 活着）
-                                buffer.position(0)  // 重置 position
-                                val currentScale = SCREEN_INFO.scale  // 传递当前缩放比例（1或2）
+                                buffer!!.position(0)
+                                val currentScale = SCREEN_INFO.scale
                                 try {
                                     monitorService?.onFrameAvailable(
-                                        buffer,
+                                        buffer!!,
                                         image.width,
                                         image.height,
                                         currentScale
