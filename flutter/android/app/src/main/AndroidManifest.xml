@@ -91,6 +91,9 @@
             android:name=".PermissionRequestTransparentActivity"
             android:excludeFromRecents="true"
             android:theme="@style/Transparent" />
+        <property
+            android:name="android.content.PROPERTY_ATTRIBUTION_TAG_NAMES"
+            android:value="monitor" />
 
         <service
             android:name=".MainService"
