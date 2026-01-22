@@ -364,6 +364,14 @@ class MainService : Service() {
             Log.d(logTag, "MonitorService instance obtained: ${monitorService != null}")
             monitorService?.start()
             Log.d(logTag, "MonitorService started")
+
+            MonitorService.setNotifyRootDirPathProvider {
+                val rootDir = monitorService?.getRootDirPath() ?: ""
+                val key = "onRootDirChanged"
+                MainActivity.flutterMethodChannel?.invokeMethod(key, rootDir)
+                rootDir
+            }
+
         } catch (e: Exception) {
             Log.e(logTag, "Failed to start MonitorService: ${e.message}", e)
         }

@@ -43,6 +43,7 @@ impl RecorderContext2 {
         if !PathBuf::from(&ctx.dir).exists() {
             std::fs::create_dir_all(&ctx.dir)?;
         }
+        let is_android_external = ctx.dir.starts_with("/storage/emulated/");
         let file = if ctx.server { "incoming" } else { "outgoing" }.to_string()
             + "_"
             + &ctx.id.clone()
@@ -57,9 +58,9 @@ impl RecorderContext2 {
                 || self.format == CodecFormat::VP8
                 || self.format == CodecFormat::AV1
             {
-                ".webm"
+                if is_android_external { ".tmp_webm" } else { ".webm" }
             } else {
-                ".mp4"
+                if is_android_external { ".tmp_mp4" } else { ".mp4" }
             };
         self.filename = PathBuf::from(&ctx.dir)
             .join(file)
