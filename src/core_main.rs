@@ -140,7 +140,7 @@ pub fn core_main() -> Option<Vec<String>> {
     {
         _is_quick_support |= !crate::platform::is_installed()
             && args.is_empty()
-            && (arg_exe.to_lowercase().contains("-qs-")
+            && (is_quick_support_exe(&arg_exe)
                 || config::LocalConfig::get_option("pre-elevate-service") == "Y"
                 || (!click_setup && crate::platform::is_elevated(None).unwrap_or(false)));
         crate::portable_service::client::set_quick_support(_is_quick_support);
@@ -187,7 +187,10 @@ pub fn core_main() -> Option<Vec<String>> {
         }
 
         #[cfg(windows)]
-        hbb_common::config::PeerConfig::preload_peers();
+        {
+            crate::platform::try_remove_temp_update_files();
+            hbb_common::config::PeerConfig::preload_peers();
+        }
         std::thread::spawn(move || crate::start_server(false, no_server));
     } else {
         #[cfg(windows)]
@@ -202,17 +205,24 @@ pub fn core_main() -> Option<Vec<String>> {
                 if config::is_disable_installation() {
                     return None;
                 }
-                let res = platform::update_me(false);
-                let text = match res {
-                    Ok(_) => translate("Update successfully!".to_string()),
-                    Err(err) => {
-                        log::error!("Failed with error: {err}");
-                        translate("Update failed!".to_string())
+
+                let text = match crate::platform::prepare_custom_client_update() {
+                    Err(e) => {
+                        log::error!("Error preparing custom client update: {}", e);
+                        "Update failed!".to_string()
                     }
+                    Ok(false) => "Update failed!".to_string(),
+                    Ok(true) => match platform::update_me(false) {
+                        Ok(_) => "Update successfully!".to_string(),
+                        Err(err) => {
+                            log::error!("Failed with error: {err}");
+                            "Update failed!".to_string()
+                        }
+                    },
                 };
                 Toast::new(Toast::POWERSHELL_APP_ID)
                     .title(&config::APP_NAME.read().unwrap())
-                    .text1(&text)
+                    .text1(&translate(text))
                     .sound(Some(Sound::Default))
                     .duration(Duration::Short)
                     .show()
@@ -828,4 +838,13 @@ fn is_root() -> bool {
     }
     #[allow(unreachable_code)]
     crate::platform::is_root()
+}
+
+/// Check if the executable is a Quick Support version.
+/// Note: This function must be kept in sync with `libs/portable/src/main.rs`.
+#[cfg(windows)]
+#[inline]
+fn is_quick_support_exe(exe: &str) -> bool {
+    let exe = exe.to_lowercase();
+    exe.contains("-qs-") || exe.contains("-qs.exe") || exe.contains("_qs.exe")
 }
