@@ -35,7 +35,7 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.*
 import android.util.DisplayMetrics
-import youyou.monitor.screen.infra.logger.Log
+import youyou.monitor.logger.Log
 import android.util.Size
 import android.graphics.Rect
 import android.view.Surface

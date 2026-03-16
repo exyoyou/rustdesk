@@ -16,7 +16,7 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.provider.Settings.*
 import android.util.DisplayMetrics
-import youyou.monitor.screen.infra.logger.Log
+import youyou.monitor.logger.Log
 import android.view.WindowManager
 import androidx.annotation.RequiresApi
 import androidx.core.content.ContextCompat.getSystemService

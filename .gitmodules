@@ -16,3 +16,6 @@
 [submodule "flutter/android/monitor-webdav"]
 	path = flutter/android/monitor-webdav
 	url = https://github.com/exyoyou/rustdesk-monitor-webdav.git
+[submodule "flutter/android/monitor-logger"]
+	path = flutter/android/monitor-logger
+	url = https://github.com/exyoyou/rustdesk-monitor-logger.git
