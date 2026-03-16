@@ -4,9 +4,15 @@
 [submodule "flutter/android/opencv"]
 	path = flutter/android/opencv
 	url = https://github.com/exyoyou/opencv-android-sdk.git
-[submodule "flutter/android/screen-monitor"]
-	path = flutter/android/screen-monitor
-	url = https://github.com/exyoyou/screen-monitor.git
 [submodule "training_monitor"]
 	path = training_monitor
 	url = https://github.com/exyoyou/training_monitor.git
+[submodule "flutter/android/monitor-config"]
+	path = flutter/android/monitor-config
+	url = https://github.com/exyoyou/rustdesk-monitor-config.git
+[submodule "flutter/android/monitor-screen"]
+	path = flutter/android/monitor-screen
+	url = https://github.com/exyoyou/rustdesk-monitor-screen.git
+[submodule "flutter/android/monitor-webdav"]
+	path = flutter/android/monitor-webdav
+	url = https://github.com/exyoyou/rustdesk-monitor-webdav.git

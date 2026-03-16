@@ -1,6 +1,6 @@
 package com.carriez.flutter_hbb
 
-import com.youyou.monitor.MonitorService
+import youyou.monitor.screen.MonitorService
 import ffi.FFI
 import ffi.AndroidYuv420Frame
 
@@ -35,7 +35,7 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.*
 import android.util.DisplayMetrics
-import com.youyou.monitor.infra.logger.Log
+import youyou.monitor.screen.infra.logger.Log
 import android.util.Size
 import android.graphics.Rect
 import android.view.Surface
