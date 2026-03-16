@@ -1,7 +1,7 @@
 package hbb;
 import android.view.KeyEvent
 import android.view.KeyCharacterMap
-import youyou.monitor.screen.infra.logger.Log
+import youyou.monitor.logger.Log
 import hbb.MessageOuterClass.KeyboardMode
 import hbb.MessageOuterClass.ControlKey
 

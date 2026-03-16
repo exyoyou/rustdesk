@@ -27,4 +27,5 @@ include ":app"
 include ':opencv'
 include ':monitor-config'
 include ':monitor-webdav'
+include ':monitor-logger'
 include ':monitor-screen'

@@ -135,6 +135,7 @@ dependencies {
     implementation 'com.caverock:androidsvg-aar:1.4'
     implementation "rustls:rustls-platform-verifier:0.1.1"
     implementation project(':monitor-screen')
+    implementation project(':monitor-logger')
     
     // Koin dependencies (needed for MonitorService)
     implementation "io.insert-koin:koin-core:3.5.0"
