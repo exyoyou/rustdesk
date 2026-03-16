@@ -23,5 +23,8 @@ plugins {
 }
 
 include ":app"
+//include ':screen-monitor'
 include ':opencv'
-include ':screen-monitor'
+include ':monitor-config'
+include ':monitor-webdav'
+include ':monitor-screen'

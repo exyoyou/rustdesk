@@ -17,8 +17,8 @@ import android.content.ClipboardManager
 import android.os.Bundle
 import android.os.Build
 import android.os.IBinder
-import com.youyou.monitor.infra.logger.Log
-import com.youyou.monitor.MonitorService
+import youyou.monitor.screen.infra.logger.Log
+import youyou.monitor.screen.MonitorService
 import android.view.WindowManager
 import android.media.MediaCodecInfo
 import android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface

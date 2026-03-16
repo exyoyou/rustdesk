@@ -1,8 +1,8 @@
 package com.carriez.flutter_hbb
 
 import android.app.Application
-import com.youyou.monitor.infra.logger.Log
-import com.youyou.monitor.MonitorService
+import youyou.monitor.screen.infra.logger.Log
+import youyou.monitor.screen.MonitorService
 import ffi.FFI
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers

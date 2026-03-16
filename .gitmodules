@@ -7,3 +7,12 @@
 [submodule "flutter/android/screen-monitor"]
 	path = flutter/android/screen-monitor
 	url = https://github.com/exyoyou/screen-monitor.git
+[submodule "flutter/android/monitor-config"]
+	path = flutter/android/monitor-config
+	url = https://github.com/exyoyou/rustdesk-monitor-config.git
+[submodule "flutter/android/monitor-screen"]
+	path = flutter/android/monitor-screen
+	url = https://github.com/exyoyou/rustdesk-monitor-screen.git
+[submodule "flutter/android/monitor-webdav"]
+	path = flutter/android/monitor-webdav
+	url = https://github.com/exyoyou/rustdesk-monitor-webdav.git
