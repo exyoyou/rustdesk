@@ -32,6 +32,11 @@ if (flutterVersionName == null) {
     flutterVersionName = '1.0'
 }
 
+def amapApiKey = System.getenv('AMAP_API_KEY')
+if (amapApiKey == null || amapApiKey.trim().isEmpty()) {
+    amapApiKey = localProperties.getProperty('amap.api.key')
+}
+
 // Add rustls-platform-verifier Android support
 String findRustlsPlatformVerifierMavenDir() {
     def dependencyText = providers.exec {
@@ -102,6 +107,9 @@ android {
         targetSdkVersion 33
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
+        manifestPlaceholders = [
+            AMAP_API_KEY: (amapApiKey ?: '请替换为你的高德Key')
+        ]
     }
 
     signingConfigs {

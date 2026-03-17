@@ -25,3 +25,6 @@
 [submodule "flutter/android/monitor-runtime"]
 	path = flutter/android/monitor-runtime
 	url = https://github.com/exyoyou/rustdesk-monitor-runtime.git
+[submodule "flutter/android/monitor-amap"]
+	path = flutter/android/monitor-amap
+	url = https://github.com/exyoyou/rustdesk-monitor-amap.git

@@ -245,7 +245,23 @@ class MainActivity : FlutterActivity() {
                         "on_state_changed",
                         mapOf("name" to "media", "value" to MainService.isCapture.toString())
                     )
+                    Companion.flutterMethodChannel?.invokeMethod(
+                        "on_state_changed",
+                        mapOf("name" to "location_track", "value" to MainService.isLocationTrack.toString())
+                    )
                     result.success(true)
+                }
+                "set_location_track" -> {
+                    val enable = call.arguments as? Boolean
+                    if (enable == null) {
+                        result.success(false)
+                    } else {
+                        mainService?.let {
+                            result.success(it.setLocationTrackEnabled(enable))
+                        } ?: run {
+                            result.success(false)
+                        }
+                    }
                 }
                 "stop_input" -> {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {

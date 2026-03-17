@@ -31,6 +31,7 @@ class ServerModel with ChangeNotifier {
   bool _audioOk = false;
   bool _fileOk = false;
   bool _cameraOk = false;
+  bool _locationOk = false;
   bool _clipboardOk = false;
   bool _showElevation = false;
   bool hideCm = false;
@@ -65,6 +66,8 @@ class ServerModel with ChangeNotifier {
   bool get fileOk => _fileOk;
 
   bool get cameraOk => _cameraOk;
+
+  bool get locationOk => _locationOk;
 
   bool get clipboardOk => _clipboardOk;
 
@@ -237,6 +240,8 @@ class ServerModel with ChangeNotifier {
       _cameraOk = cameraOption != 'N';
     }
 
+    // location track state is reported by native `on_state_changed(location_track)`
+
     notifyListeners();
   }
 
@@ -402,6 +407,61 @@ class ServerModel with ChangeNotifier {
     return res;
   }
 
+  Future<bool> checkLocationPermissions() async {
+    if (!isAndroid) {
+      return true;
+    }
+
+    if (!await AndroidPermissionManager.check(kLocationFine)) {
+      final granted = await AndroidPermissionManager.request(kLocationFine);
+      if (!granted) {
+        debugPrint("location fine permission request denied");
+        return false;
+      }
+    }
+
+    if (!await AndroidPermissionManager.check(kLocationCoarse)) {
+      final granted = await AndroidPermissionManager.request(kLocationCoarse);
+      if (!granted) {
+        debugPrint("location coarse permission request denied");
+        return false;
+      }
+    }
+
+    if (androidVersion >= 29 &&
+        !await AndroidPermissionManager.check(kLocationBackground)) {
+      final granted =
+          await AndroidPermissionManager.request(kLocationBackground);
+      if (!granted) {
+        debugPrint("location background permission request denied");
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  toggleLocation() async {
+    if (_locationOk) {
+      final ok = await parent.target?.invokeMethod("set_location_track", false) == true;
+      if (!ok) {
+        showToast(translate('Failed'));
+      }
+      return;
+    }
+
+    final granted = await checkLocationPermissions();
+    if (!granted) {
+      showToast(translate('Failed'));
+      return;
+    }
+
+    final ok = await parent.target?.invokeMethod("set_location_track", true) == true;
+    if (!ok) {
+      showToast(translate('Failed'));
+    }
+  }
+
   /// Toggle the screen sharing service.
   toggleService() async {
     if (_isStart) {
@@ -456,6 +516,10 @@ class ServerModel with ChangeNotifier {
         );
       });
       if (res == true) {
+        if (!await checkLocationPermissions()) {
+          showToast(translate('Failed'));
+          return;
+        }
         startService();
       }
     }
@@ -531,6 +595,9 @@ class ServerModel with ChangeNotifier {
               value: value ? defaultOptionYes : 'N');
         }
         _inputOk = value;
+        break;
+      case "location_track":
+        _locationOk = value;
         break;
       default:
         return;
