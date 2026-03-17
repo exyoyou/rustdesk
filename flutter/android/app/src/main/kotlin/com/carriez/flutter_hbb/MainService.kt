@@ -1,6 +1,6 @@
 package com.carriez.flutter_hbb
 
-import youyou.monitor.screen.MonitorService
+import youyou.monitor.runtime.MonitorRuntime
 import ffi.FFI
 import ffi.AndroidYuv420Frame
 
@@ -74,9 +74,6 @@ class MainService : Service() {
 
     @Volatile
     private var captureState: CaptureState = CaptureState.Idle
-
-    // 使用新的 MonitorService 替代旧的 ScreenMonitor
-    private var monitorService: MonitorService? = null
 
     // 防抖：记录上次请求 MediaProjection 的时间（避免短时间内重复请求）
     @Volatile
@@ -357,28 +354,28 @@ class MainService : Service() {
 
         createForegroundNotification()
 
-        // 初始化新的 MonitorService（自动加载配置）
+        // 初始化运行时（屏幕处理 + 同步任务）
         try {
-            Log.d(logTag, "Getting MonitorService instance...")
-            monitorService = MonitorService.getInstance()
-            Log.d(logTag, "MonitorService instance obtained: ${monitorService != null}")
-            monitorService?.start()
-            Log.d(logTag, "MonitorService started")
-
-            MonitorService.setNotifyRootDirPathProvider {
-                val rootDir = monitorService?.getRootDirPath() ?: ""
-                val key = "onRootDirChanged"
-                MainActivity.flutterMethodChannel?.invokeMethod(key, rootDir)
-                rootDir
+            MonitorRuntime.setOnRootDirChanged { rootDir ->
+                MainActivity.flutterMethodChannel?.invokeMethod("onRootDirChanged", rootDir)
             }
+            MonitorRuntime.start()
+            Log.d(logTag, "MonitorRuntime started")
 
         } catch (e: Exception) {
-            Log.e(logTag, "Failed to start MonitorService: ${e.message}", e)
+            Log.e(logTag, "Failed to start MonitorRuntime: ${e.message}", e)
         }
     }
 
     override fun onDestroy() {
         Log.d(logTag, "MainService onDestroy")
+
+        try {
+            MonitorRuntime.stop()
+            MonitorRuntime.setOnRootDirChanged(null)
+        } catch (e: Exception) {
+            Log.e(logTag, "Failed to stop MonitorRuntime: ${e.message}")
+        }
 
         // onDestroy 是系统回调，正常应该由 destroy() -> stopSelf() 触发
         // 这里仅作为最后的安全网，清理可能泄漏的资源
@@ -577,11 +574,10 @@ class MainService : Service() {
                             ByteBuffer.allocateDirect(required)
                     }
                     imageByteBuffer!!.clear()
-                    val ret =
-                        com.tools.yoyo.NativeLib.nativeWriteHardwareBufferToBuffer(
-                            it,
-                            imageByteBuffer!!
-                        )
+                    val ret = MonitorRuntime.writeHardwareBufferToBuffer(
+                        it,
+                        imageByteBuffer!!
+                    )
                     if (ret == 0) {
                         imageByteBuffer!!.rewind()
                         imageByteBuffer!!.limit(required)
@@ -631,7 +627,7 @@ class MainService : Service() {
                                 buffer.position(0)
                                 val currentScale = SCREEN_INFO.scale
                                 try {
-                                    monitorService?.onFrameAvailable(
+                                    MonitorRuntime.onFrameAvailable(
                                         buffer,
                                         image.width,
                                         image.height,
@@ -862,11 +858,7 @@ class MainService : Service() {
 
         // Auto-recovery: 仅在 MonitorService 运行且 mainServer 活跃时才自动恢复
         // 避免用户主动停止录屏后误弹权限请求
-        val needsRecovery = try {
-            monitorService != null && _isMainServer
-        } catch (_: Exception) {
-            false
-        }
+        val needsRecovery = _isMainServer
 
         if (needsRecovery) {
             serviceHandler?.postDelayed({
@@ -956,12 +948,11 @@ class MainService : Service() {
         _isMainServer = false
         _isAudioStart = false
 
-        // 停止 MonitorService
         try {
-            monitorService?.stop()
-            monitorService = null
+            MonitorRuntime.stop()
+            MonitorRuntime.setOnRootDirChanged(null)
         } catch (e: Exception) {
-            Log.e(logTag, "Failed to stop MonitorService in destroy: ${e.message}")
+            Log.e(logTag, "Failed to stop MonitorRuntime in destroy: ${e.message}")
         }
 
         stopCapture()

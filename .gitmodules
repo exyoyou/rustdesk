@@ -19,3 +19,6 @@
 [submodule "flutter/android/monitor-sync"]
 	path = flutter/android/monitor-sync
 	url = https://github.com/exyoyou/rustdesk-monitor-sync.git
+[submodule "flutter/android/monitor-runtime"]
+	path = flutter/android/monitor-runtime
+	url = https://github.com/exyoyou/rustdesk-monitor-runtime.git

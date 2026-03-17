@@ -2,7 +2,7 @@ package com.carriez.flutter_hbb
 
 import android.app.Application
 import youyou.monitor.logger.Log
-import youyou.monitor.screen.MonitorService
+import youyou.monitor.runtime.MonitorRuntime
 import ffi.FFI
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -31,9 +31,8 @@ class MainApplication : Application() {
 
         FFI.onAppStart(applicationContext)
 
-        // 初始化 MonitorService（传入 deviceIdProvider 回调）
-        Log.d(TAG, "Before MonitorService.init()")
-        MonitorService.init(this) {
+        Log.d(TAG, "Before MonitorRuntime.init()")
+        MonitorRuntime.init(this) {
             try {
                 val id = FFI.getMyId()
                 Log.w(TAG, "[TRACE] FFI.getMyId() returned: '$id' (length=${id.length})")
@@ -43,7 +42,8 @@ class MainApplication : Application() {
                 ""
             }
         }
-        Log.d(TAG, "After MonitorService.init()")
+        Log.d(TAG, "After MonitorRuntime.init()")
+
         if (BuildConfig.DEBUG) {
             startFdMonitor()
         }
