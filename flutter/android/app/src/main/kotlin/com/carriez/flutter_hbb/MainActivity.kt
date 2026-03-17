@@ -18,7 +18,7 @@ import android.os.Bundle
 import android.os.Build
 import android.os.IBinder
 import youyou.monitor.logger.Log
-import youyou.monitor.screen.MonitorService
+import youyou.monitor.runtime.MonitorRuntime
 import android.view.WindowManager
 import android.media.MediaCodecInfo
 import android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
@@ -139,7 +139,7 @@ class MainActivity : FlutterActivity() {
             when (call.method) {
                 "getRootDirPath" -> {
                     try {
-                        val dir = MonitorService.getInstance().getRootDirPath()
+                        val dir = MonitorRuntime.getRootDirPath()
                         result.success(dir)
                     } catch (e: Exception) {
                         result.error("-1", "Failed to get root dir: ${e.message}", null)
