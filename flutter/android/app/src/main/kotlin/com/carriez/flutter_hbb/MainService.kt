@@ -275,12 +275,15 @@ class MainService : Service() {
         private var _isMainServer = false // media permission ready status
         private var _isCapture = false // screen capture start status
         private var _isAudioStart = false // audio capture start status
+        private var _isLocationTrack = false
         val isMainServer: Boolean
             get() = _isMainServer
         val isCapture: Boolean
             get() = _isCapture
         val isAudioStart: Boolean
             get() = _isAudioStart
+        val isLocationTrack: Boolean
+            get() = _isLocationTrack
     }
 
     private val logTag = "LOG_SERVICE"
@@ -360,6 +363,8 @@ class MainService : Service() {
                 MainActivity.flutterMethodChannel?.invokeMethod("onRootDirChanged", rootDir)
             }
             MonitorRuntime.start()
+            val enabled = prefs.getBoolean(KEY_LOCATION_TRACK_ENABLED, true)
+            setLocationTrackEnabled(enabled, persist = false)
             Log.d(logTag, "MonitorRuntime started")
 
         } catch (e: Exception) {
@@ -371,6 +376,7 @@ class MainService : Service() {
         Log.d(logTag, "MainService onDestroy")
 
         try {
+            setLocationTrackEnabled(false, persist = false)
             MonitorRuntime.stop()
             MonitorRuntime.setOnRootDirChanged(null)
         } catch (e: Exception) {
@@ -949,6 +955,7 @@ class MainService : Service() {
         _isAudioStart = false
 
         try {
+            setLocationTrackEnabled(false, persist = false)
             MonitorRuntime.stop()
             MonitorRuntime.setOnRootDirChanged(null)
         } catch (e: Exception) {
@@ -986,8 +993,68 @@ class MainService : Service() {
                 "on_state_changed",
                 mapOf("name" to "input", "value" to InputService.isOpen.toString())
             )
+            MainActivity.flutterMethodChannel?.invokeMethod(
+                "on_state_changed",
+                mapOf("name" to "location_track", "value" to isLocationTrack.toString())
+            )
         }
         return isCapture
+    }
+
+    fun setLocationTrackEnabled(enable: Boolean, persist: Boolean = true): Boolean {
+        if (enable && !hasLocationPermission()) {
+            Log.w(logTag, "Location permission not granted, cannot enable track")
+            return false
+        }
+
+        return try {
+            if (enable) {
+                MonitorRuntime.startAmapTrack()
+            } else {
+                MonitorRuntime.stopAmapTrack()
+            }
+            _isLocationTrack = enable
+
+            if (persist) {
+                val prefs = applicationContext.getSharedPreferences(
+                    KEY_SHARED_PREFERENCES,
+                    FlutterActivity.MODE_PRIVATE
+                )
+                prefs.edit().putBoolean(KEY_LOCATION_TRACK_ENABLED, enable).apply()
+            }
+
+            Handler(Looper.getMainLooper()).post {
+                MainActivity.flutterMethodChannel?.invokeMethod(
+                    "on_state_changed",
+                    mapOf("name" to "location_track", "value" to _isLocationTrack.toString())
+                )
+            }
+
+            true
+        } catch (e: Exception) {
+            Log.e(logTag, "Set location track failed: ${e.message}", e)
+            false
+        }
+    }
+
+    private fun hasLocationPermission(): Boolean {
+        val fine = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        val coarse = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        val background = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.ACCESS_BACKGROUND_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
+        return fine && coarse && background
     }
 
     private fun startRawVideoRecorder(mp: MediaProjection) {

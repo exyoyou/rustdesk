@@ -625,6 +625,11 @@ class _PermissionCheckerState extends State<PermissionChecker> {
             serverModel.cameraOk,
             serverModel.toggleCamera, // 假设你增加了这个方法
           ),
+          PermissionRow(
+            translate("Location Access"),
+            serverModel.locationOk,
+            serverModel.toggleLocation,
+          ),
         ]));
   }
 }

@@ -425,6 +425,9 @@ const kRequestIgnoreBatteryOptimizations =
     "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS";
 const kSystemAlertWindow = "android.permission.SYSTEM_ALERT_WINDOW";
 const kAndroid13Notification = "android.permission.POST_NOTIFICATIONS";
+const kLocationCoarse = "android.permission.ACCESS_COARSE_LOCATION";
+const kLocationFine = "android.permission.ACCESS_FINE_LOCATION";
+const kLocationBackground = "android.permission.ACCESS_BACKGROUND_LOCATION";
 
 /// Android channel invoke type key
 class AndroidChannel {
