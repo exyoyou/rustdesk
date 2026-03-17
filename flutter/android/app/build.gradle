@@ -136,6 +136,7 @@ dependencies {
     implementation "rustls:rustls-platform-verifier:0.1.1"
     implementation project(':monitor-screen')
     implementation project(':monitor-logger')
+    implementation project(':monitor-sync')
     
     // Koin dependencies (needed for MonitorService)
     implementation "io.insert-koin:koin-core:3.5.0"
