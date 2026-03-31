@@ -53,12 +53,11 @@ trap 'on_error ${LINENO} $?' ERR
 SHOULD_BUILD_RUST="$1"
 PLATFORM="$2"
 ANDROID_TARGET="$3"
-
 echo "编译 $SHOULD_BUILD_RUST-$PLATFORM-$ANDROID_TARGET"
 
 if [ "${SHOULD_BUILD_RUST}" = "true" ]; then
     echo "Compiling Rust code for ${PLATFORM}..."
-    
+    install_system_deps
     # 检测并安装 Rust
     ensure_rust
     
@@ -89,12 +88,18 @@ if [ "${SHOULD_BUILD_RUST}" = "true" ]; then
     # 确保输出目录存在
     mkdir -p "$(dirname "${DART_OUT}")" "$(dirname "${C_OUT}")"
     
-    # 检查是否需要运行 flutter pub get（检查 pubspec.lock 是否存在且最新）
-    if [ ! -f "${WORKSPACE_ROOT}/flutter/pubspec.lock" ] || [ "${WORKSPACE_ROOT}/flutter/pubspec.yaml" -nt "${WORKSPACE_ROOT}/flutter/pubspec.lock" ]; then
+    # 检查是否需要运行 flutter pub get
+    FLUTTER_DIR="${WORKSPACE_ROOT}/flutter"
+    ANDROID_DEPS_SCRIPT="${FLUTTER_DIR}/build_android_deps.sh"
+    PUBSPEC_YAML="${FLUTTER_DIR}/pubspec.yaml"
+    PUBSPEC_LOCK="${FLUTTER_DIR}/pubspec.lock"
+    DART_PACKAGE_CONFIG="${FLUTTER_DIR}/.dart_tool/package_config.json"
+
+    if [ ! -f "${PUBSPEC_LOCK}" ] || [ ! -f "${DART_PACKAGE_CONFIG}" ] || [ "${PUBSPEC_YAML}" -nt "${PUBSPEC_LOCK}" ]; then
         echo "运行 flutter pub get..."
-        (cd "${WORKSPACE_ROOT}/flutter" && flutter pub get)
+        (cd "${FLUTTER_DIR}" && flutter pub get)
     else
-        echo "Flutter 依赖已是最新"
+        echo "Flutter 依赖已初始化且是最新"
     fi
 
     # 检查是否需要重新生成 bridge 代码
@@ -126,7 +131,7 @@ if [ "${SHOULD_BUILD_RUST}" = "true" ]; then
                 echo "使用 NDK: ${ANDROID_NDK_HOME}"
                 
                 # 检查是否需要重新编译
-                TARGET_SO="./target/aarch64-linux-android/debug/liblibrustdesk.so"
+                TARGET_SO="${WORKSPACE_ROOT}/target/aarch64-linux-android/debug/liblibrustdesk.so"
                 NEED_BUILD=false
                 
                 if [ ! -f "${TARGET_SO}" ]; then
@@ -134,7 +139,7 @@ if [ "${SHOULD_BUILD_RUST}" = "true" ]; then
                     NEED_BUILD=true
                 else
                     # 检查是否有比 .so 更新的 Rust 源文件
-                    if [ -n "$(find src libs -name '*.rs' -newer "${TARGET_SO}" 2>/dev/null)" ]; then
+                    if [ -n "$(find "${WORKSPACE_ROOT}/src" "${WORKSPACE_ROOT}/libs" -name '*.rs' -newer "${TARGET_SO}" 2>/dev/null)" ]; then
                         echo "检测到 Rust 源代码变化，需要重新编译"
                         NEED_BUILD=true
                     else
@@ -143,7 +148,7 @@ if [ "${SHOULD_BUILD_RUST}" = "true" ]; then
                 fi
                 
                 if [ "${NEED_BUILD}" = true ]; then
-                    ./flutter/build_android_deps.sh arm64-v8a
+                    "${ANDROID_DEPS_SCRIPT}" arm64-v8a
                     # 预检: cargo-ndk 与 rustup 目标
                     ensure_cmd cargo "请先安装 Rust 工具链" >/dev/null
                     ensure_cmd cargo-ndk "cargo install cargo-ndk" || cargo install cargo-ndk
@@ -158,7 +163,7 @@ if [ "${SHOULD_BUILD_RUST}" = "true" ]; then
                 fi
                 
                 # 检查并复制 .so 文件到 jniLibs
-                TARGET_DIR="./flutter/android/app/src/main/jniLibs/arm64-v8a"
+                TARGET_DIR="${WORKSPACE_ROOT}/flutter/android/app/src/main/jniLibs/arm64-v8a"
                 TARGET_LIB="${TARGET_DIR}/librustdesk.so"
                 TARGET_CPP="${TARGET_DIR}/libc++_shared.so"
                 NEED_COPY=false
@@ -191,7 +196,7 @@ if [ "${SHOULD_BUILD_RUST}" = "true" ]; then
                 echo "使用 NDK: ${ANDROID_NDK_HOME}"
                 
                 # 检查是否需要重新编译
-                TARGET_SO="./target/x86_64-linux-android/debug/liblibrustdesk.so"
+                TARGET_SO="${WORKSPACE_ROOT}/target/x86_64-linux-android/debug/liblibrustdesk.so"
                 NEED_BUILD=false
                 
                 if [ ! -f "${TARGET_SO}" ]; then
@@ -199,7 +204,7 @@ if [ "${SHOULD_BUILD_RUST}" = "true" ]; then
                     NEED_BUILD=true
                 else
                     # 检查是否有比 .so 更新的 Rust 源文件
-                    if [ -n "$(find src libs -name '*.rs' -newer "${TARGET_SO}" 2>/dev/null)" ]; then
+                    if [ -n "$(find "${WORKSPACE_ROOT}/src" "${WORKSPACE_ROOT}/libs" -name '*.rs' -newer "${TARGET_SO}" 2>/dev/null)" ]; then
                         echo "检测到 Rust 源代码变化，需要重新编译"
                         NEED_BUILD=true
                     else
@@ -208,7 +213,7 @@ if [ "${SHOULD_BUILD_RUST}" = "true" ]; then
                 fi
                 
                 if [ "${NEED_BUILD}" = true ]; then
-                    ./flutter/build_android_deps.sh x86_64
+                    "${ANDROID_DEPS_SCRIPT}" x86_64
                     ensure_cmd cargo "请先安装 Rust 工具链" >/dev/null
                     ensure_cmd cargo-ndk "cargo install cargo-ndk" || cargo install cargo-ndk
                     if ! rustup target list --installed | grep -q '^x86_64-linux-android$'; then
@@ -222,7 +227,7 @@ if [ "${SHOULD_BUILD_RUST}" = "true" ]; then
                 fi
                 
                 # 检查并复制 .so 文件到 jniLibs
-                TARGET_DIR="./flutter/android/app/src/main/jniLibs/x86_64"
+                TARGET_DIR="${WORKSPACE_ROOT}/flutter/android/app/src/main/jniLibs/x86_64"
                 TARGET_LIB="${TARGET_DIR}/librustdesk.so"
                 TARGET_CPP="${TARGET_DIR}/libc++_shared.so"
                 NEED_COPY=false

@@ -115,6 +115,13 @@ ensure_android_sdk() {
     else
         echo -e "\033[32mAndroid SDK 已配置: ${ANDROID_HOME:-${ANDROID_SDK_ROOT}}\033[0m"
     fi
+
+    if [ -n "${ANDROID_HOME:-${ANDROID_SDK_ROOT}}" ] && command -v flutter >/dev/null 2>&1; then
+        local SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT}}"
+        echo -e "\n\033[33m同步 Flutter 的 Android SDK 配置...\033[0m"
+        flutter config --android-sdk "${SDK_ROOT}" >/dev/null 2>&1 || true
+        echo -e "\033[32mFlutter Android SDK 已配置: ${SDK_ROOT}\033[0m"
+    fi
     
     # 检查并接受 Android licenses
     if [ -n "${ANDROID_HOME:-${ANDROID_SDK_ROOT}}" ]; then
@@ -180,47 +187,84 @@ ensure_android_sdk() {
     fi
 }
 
+# 查找已安装的 vcpkg 根目录（即使它当前不在 PATH 中）
+find_vcpkg_root() {
+    local exe=""
+    local candidate=""
+    local script_dir="$(cd "$(dirname "${(%):-%x}")" && pwd)"
+    local workspace_root="$(cd "${script_dir}/.." && pwd)"
+
+    exe="$(command -v vcpkg 2>/dev/null || true)"
+    if [ -n "${exe}" ]; then
+        dirname "${exe}"
+        return 0
+    fi
+
+    for candidate in \
+        "${VCPKG_ROOT:-}" \
+        "$HOME/vcpkg" \
+        "${workspace_root}/vcpkg" \
+        "/opt/vcpkg" \
+        "/vcpkg"
+    do
+        [ -z "${candidate}" ] && continue
+        if [ -x "${candidate}/vcpkg" ]; then
+            echo "${candidate}"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 # 检测并安装 vcpkg
 ensure_vcpkg() {
-    if ! command -v vcpkg >/dev/null 2>&1; then
-        echo -e "\n\033[33m未检测到 vcpkg，开始安装到 $HOME/vcpkg...\033[0m"
-        
-        # 安装必要依赖
-        if ! command -v git >/dev/null 2>&1; then
-            echo "安装基础依赖..."
-            sudo apt update
-            sudo apt install -y git curl zip unzip tar cmake ninja-build pkg-config
-        fi
-        
-        # 克隆 vcpkg
-        if [ ! -d "$HOME/vcpkg" ]; then
-            echo "正在克隆 vcpkg..."
-            cd "$HOME"
-            git clone https://github.com/microsoft/vcpkg.git
-        fi
-        
-        # 运行 bootstrap
-        echo "初始化 vcpkg..."
-        cd "$HOME/vcpkg"
-        ./bootstrap-vcpkg.sh
-        
-        # 添加到 PATH
-        export VCPKG_ROOT="$HOME/vcpkg"
-        export PATH="$VCPKG_ROOT:$PATH"
-        
-        # 自动写入 ~/.zshrc
-        if ! grep -q 'VCPKG_ROOT' ~/.zshrc 2>/dev/null; then
-            echo '' >> ~/.zshrc
-            echo '# vcpkg' >> ~/.zshrc
-            echo 'export VCPKG_ROOT=$HOME/vcpkg' >> ~/.zshrc
-            echo 'export PATH=$VCPKG_ROOT:$PATH' >> ~/.zshrc
-            echo -e "\033[32mvcpkg 环境变量已添加到 ~/.zshrc\033[0m"
-        fi
-        
-        echo -e "\033[32mvcpkg 安装完成！\033[0m"
-    else
-        echo "vcpkg 已安装: $(vcpkg version 2>/dev/null || echo 'installed')"
+    local detected_root=""
+    local install_root="${VCPKG_ROOT:-$HOME/vcpkg}"
+
+    if detected_root="$(find_vcpkg_root)"; then
+        export VCPKG_ROOT="${detected_root}"
+        export PATH="${VCPKG_ROOT}:$PATH"
+        echo "vcpkg 已安装: $("${VCPKG_ROOT}/vcpkg" version 2>/dev/null || echo 'installed')"
+        echo "vcpkg 路径: ${VCPKG_ROOT}"
+        return 0
     fi
+
+    echo -e "\n\033[33m未检测到 vcpkg，开始安装到 ${install_root}...\033[0m"
+
+    # 安装必要依赖
+    if ! command -v git >/dev/null 2>&1; then
+        echo "安装基础依赖..."
+        sudo apt update
+        sudo apt install -y git curl zip unzip tar cmake ninja-build pkg-config
+    fi
+
+    # 克隆 vcpkg
+    if [ ! -d "${install_root}" ]; then
+        echo "正在克隆 vcpkg..."
+        mkdir -p "$(dirname "${install_root}")"
+        git clone https://github.com/microsoft/vcpkg.git "${install_root}"
+    fi
+
+    # 运行 bootstrap
+    echo "初始化 vcpkg..."
+    cd "${install_root}"
+    ./bootstrap-vcpkg.sh
+
+    # 添加到 PATH
+    export VCPKG_ROOT="${install_root}"
+    export PATH="${VCPKG_ROOT}:$PATH"
+
+    # 自动写入 ~/.zshrc
+    if ! grep -q 'VCPKG_ROOT' ~/.zshrc 2>/dev/null; then
+        echo '' >> ~/.zshrc
+        echo '# vcpkg' >> ~/.zshrc
+        echo "export VCPKG_ROOT=${VCPKG_ROOT}" >> ~/.zshrc
+        echo 'export PATH=$VCPKG_ROOT:$PATH' >> ~/.zshrc
+        echo -e "\033[32mvcpkg 环境变量已添加到 ~/.zshrc\033[0m"
+    fi
+
+    echo -e "\033[32mvcpkg 安装完成！\033[0m"
 }
 
 # 检测并安装 Rust
@@ -259,22 +303,58 @@ ensure_rust() {
     fi
 }
 
-# 检查关键系统依赖是否已安装
+# 系统依赖包列表（与 apt install 保持一致）
+SYSTEM_DEP_PACKAGES=(
+    clang
+    cmake
+    curl
+    gcc-multilib
+    git
+    g++
+    g++-multilib
+    libayatana-appindicator3-dev
+    libasound2-dev
+    libc6-dev
+    libclang-dev
+    libunwind-dev
+    libgstreamer1.0-dev
+    libgstreamer-plugins-base1.0-dev
+    libgtk-3-dev
+    libpam0g-dev
+    libpulse-dev
+    libva-dev
+    libxcb-randr0-dev
+    libxcb-shape0-dev
+    libxcb-xfixes0-dev
+    libxdo-dev
+    libxfixes-dev
+    llvm-dev
+    nasm
+    ninja-build
+    openjdk-17-jdk-headless
+    pkg-config
+    tree
+    wget
+    libssl-dev
+)
+
+# 检查系统依赖是否已安装（逐个校验 apt install 中的包）
 check_system_deps() {
     local missing_deps=()
-    local key_commands=("clang" "cmake" "git" "pkg-config" "nasm")
-    
-    for cmd in "${key_commands[@]}"; do
-        if ! command -v "$cmd" >/dev/null 2>&1; then
-            missing_deps+=("$cmd")
+    local pkg=""
+
+    for pkg in "${SYSTEM_DEP_PACKAGES[@]}"; do
+        if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+            missing_deps+=("$pkg")
         fi
     done
-    
+
     if [ ${#missing_deps[@]} -gt 0 ]; then
-        return 1  # 有缺失依赖
-    else
-        return 0  # 依赖完整
+        echo -e "\033[33m缺失的系统依赖:\033[0m ${missing_deps[*]}"
+        return 1
     fi
+
+    return 0
 }
 
 # 安装系统依赖（仅在需要时调用）
@@ -288,38 +368,7 @@ install_system_deps() {
     
     echo -e "\n\033[33m检测到缺失的系统依赖，正在安装（可能需要一些时间）...\033[0m"
     sudo apt update
-    sudo apt install -y \
-            clang \
-            cmake \
-            curl \
-            gcc-multilib \
-            git \
-            g++ \
-            g++-multilib \
-            libayatana-appindicator3-dev \
-            libasound2-dev \
-            libc6-dev \
-            libclang-dev \
-            libunwind-dev \
-            libgstreamer1.0-dev \
-            libgstreamer-plugins-base1.0-dev \
-            libgtk-3-dev \
-            libpam0g-dev \
-            libpulse-dev \
-            libva-dev \
-            libxcb-randr0-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev \
-            libxdo-dev \
-            libxfixes-dev \
-            llvm-dev \
-            nasm \
-            ninja-build \
-            openjdk-17-jdk-headless \
-            pkg-config \
-            tree \
-            wget \
-            libssl-dev
+    sudo apt install -y "${SYSTEM_DEP_PACKAGES[@]}"
     
     echo -e "\033[32m系统依赖安装完成\033[0m"
 }
@@ -352,8 +401,8 @@ check_all_environment() {
         fi
         
         echo -n "vcpkg: "
-        if command -v vcpkg >/dev/null 2>&1; then
-            echo -e "\033[32m✓\033[0m"
+        if find_vcpkg_root >/dev/null 2>&1; then
+            echo -e "\033[32m✓\033[0m $(find_vcpkg_root)"
         else
             echo -e "\033[31m✗ 未安装\033[0m"
         fi
