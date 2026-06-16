@@ -269,37 +269,57 @@ ensure_vcpkg() {
 
 # 检测并安装 Rust
 ensure_rust() {
-    if ! command -v rustc >/dev/null 2>&1 || ! command -v cargo >/dev/null 2>&1; then
-        echo -e "\n\033[33m未检测到 Rust，开始安装 Rust 工具链...\033[0m"
-        
-        # 安装必要依赖
-        if ! command -v curl >/dev/null 2>&1; then
-            echo "安装基础依赖..."
-            sudo apt update
-            sudo apt install -y curl build-essential
-        fi
-        
-        # 安装 Rust
-        echo "正在下载并安装 rustup..."
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-        
-        # 加载 Cargo 环境
-        if [ -f "$HOME/.cargo/env" ]; then
-            source "$HOME/.cargo/env"
-        fi
-        
-        # 自动写入 ~/.zshrc
-        if ! grep -q '.cargo/env' ~/.zshrc 2>/dev/null; then
-            echo '' >> ~/.zshrc
-            echo '# Rust' >> ~/.zshrc
-            echo 'source $HOME/.cargo/env' >> ~/.zshrc
-            echo -e "\033[32mRust 环境已添加到 ~/.zshrc\033[0m"
-        fi
-        
-        echo -e "\033[32mRust 安装完成！\033[0m"
-        echo "Rust 版本: $(rustc --version)"
+    # 1. 检查 rustc 是否存在且能正常响应 version 命令
+    if command -v rustc >/dev/null 2>&1 && rustc --version >/dev/null 2>&1; then
+        echo -e "\033[32mRust 已安装且运行正常: $(rustc --version)\033[0m"
     else
-        echo "Rust 已安装: $(rustc --version)"
+        # 2. 如果存在 rustup 但无法正常运行 rustc（比如缺少默认工具链）
+        if command -v rustup >/dev/null 2>&1; then
+            echo -e "\n\033[33m检测到 rustup，但未配置默认工具链。正在修复...\033[0m"
+            rustup default stable
+            
+            # 再次验证修复结果
+            if rustc --version >/dev/null 2>&1; then
+                echo -e "\033[32mRust 工具链修复成功！当前版本: $(rustc --version)\033[0m"
+            else
+                echo -e "\033[31m修复失败，尝试重新安装...\033[0m"
+            fi
+        fi
+
+        # 3. 如果依然无法运行 rustc，则进入完整的全新安装逻辑
+        if ! command -v rustc >/dev/null 2>&1 || ! rustc --version >/dev/null 2>&1; then
+            echo -e "\n\033[33m未检测到可用的 Rust 环境，开始安装 Rust 工具链...\033[0m"
+            
+            # 安装必要依赖
+            if ! command -v curl >/dev/null 2>&1; then
+                echo "安装基础依赖..."
+                sudo apt update
+                sudo apt install -y curl build-essential
+            fi
+            
+            # 安装 Rust（带 -y 自动确认并默认安装 stable）
+            echo "正在下载并安装 rustup..."
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            
+            # 立即加载当前 shell 环境
+            if [ -f "$HOME/.cargo/env" ]; then
+                source "$HOME/.cargo/env"
+            fi
+            
+            # 自动写入 ~/.zshrc（如果使用 zsh）
+            if [ -f "$HOME/.zshrc" ] && ! grep -q '.cargo/env' ~/.zshrc 2>/dev/null; then
+                echo '' >> ~/.zshrc
+                echo '# Rust' >> ~/.zshrc
+                echo 'source $HOME/.cargo/env' >> ~/.zshrc
+                echo -e "\033[32mRust 环境已添加到 ~/.zshrc\033[0m"
+            fi
+            
+            # 额外保险：确保安装后锁死默认版本
+            rustup default stable >/dev/null 2>&1
+            
+            echo -e "\033[32mRust 安装完成！\033[0m"
+            echo "Rust 版本: $(rustc --version)"
+        fi
     fi
 }
 
