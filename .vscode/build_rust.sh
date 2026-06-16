@@ -110,8 +110,35 @@ if [ "${SHOULD_BUILD_RUST}" = "true" ]; then
     
     if [ "${NEED_CODEGEN}" = true ]; then
         echo "运行 flutter_rust_bridge_codegen..."
+        
+        # 1. 动态获取 Cargo 的根路径：如果 $CARGO_HOME 未定义，则使用默认的 $HOME/.cargo
+        CARGO_DIR="${CARGO_HOME:-$HOME/.cargo}"
+        CODEGEN_PATH="${CARGO_DIR}/bin/flutter_rust_bridge_codegen"
+        
+        # 2. 检查工具是否存在，如果不存在则尝试自动安装
+        if [ ! -f "${CODEGEN_PATH}" ]; then
+            echo "未检测到 flutter_rust_bridge_codegen，正在尝试自动安装..."
+            
+            # # 确保系统有 cargo 命令
+            # if ! command -v cargo &> /dev/null; then
+            #     echo "错误: 未检测到 cargo 命令，请先安装 Rust 环境 (https://rustup.rs/)。"
+            #     exit 1
+            # fi
+            
+            # 自动安装（可以根据需要指定版本，例如 --version 1.82.4）
+            cargo install flutter_rust_bridge_codegen
+            
+            # 再次确认
+            if [ ! -f "${CODEGEN_PATH}" ]; then
+                echo "错误: flutter_rust_bridge_codegen 安装失败。"
+                exit 1
+            fi
+            echo "flutter_rust_bridge_codegen 安装成功！"
+        fi
+
         cd "${WORKSPACE_ROOT}"
-        ~/.cargo/bin/flutter_rust_bridge_codegen --rust-input "${RUST_INPUT}" --dart-output "${DART_OUT}" --c-output "${C_OUT}"
+        # 3. 执行生成命令
+        "${CODEGEN_PATH}" --rust-input "${RUST_INPUT}" --dart-output "${DART_OUT}" --c-output "${C_OUT}"
     else
         echo "Bridge 代码已是最新，跳过 codegen"
     fi
