@@ -23,4 +23,4 @@ plugins {
 }
 
 include ":app"
-include ':opencv'
+// include ':opencv'
