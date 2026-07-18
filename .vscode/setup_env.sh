@@ -33,12 +33,28 @@ ensure_flutter() {
             echo "正在克隆 Flutter SDK（版本 3.24.5）..."
             cd "$HOME"
             git clone https://github.com/flutter/flutter.git -b 3.24.5 --depth 1
-            
-            # 应用 RustDesk 补丁
-            echo "应用 Flutter 补丁..."
-            cd "$HOME/flutter"
-            local WORKSPACE_ROOT="$(cd "$(dirname "${(%):-%x}")/.." && pwd)"
-            git apply "${WORKSPACE_ROOT}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+        fi
+        
+        # 应用 RustDesk 补丁（移动到 if 外部，每次都进行安全校验）
+        cd "$HOME/flutter"
+        local WORKSPACE_ROOT="$(cd "$(dirname "${(%):-%x}")/.." && pwd)"
+        local PATCH_FILE="${WORKSPACE_ROOT}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+
+        if [ -f "$PATCH_FILE" ]; then
+            # 使用 git apply --check 检查补丁是否可以应用（如果已经应用过，通常会报错/不通过）
+            # 或者更直接：检查补丁是否已经应用
+            if git apply --reverse --check "$PATCH_FILE" >/dev/null 2>&1; then
+                echo "提示: Flutter 补丁之前已经应用过了，跳过。"
+            else
+                echo "正在应用 RustDesk 专属 Flutter 补丁..."
+                if git apply "$PATCH_FILE" 2>/dev/null; then
+                    echo -e "\033[32mFlutter 补丁应用成功！\033[0m"
+                else
+                    echo -e "\033[31m警告: 补丁应用失败，请检查 Flutter 版本是否匹配。\033[0m"
+                fi
+            fi
+        else
+            echo -e "\033[31m错误: 未找到补丁文件: $PATCH_FILE\033[0m"
         fi
         
         # 添加到 PATH
@@ -87,103 +103,122 @@ ensure_flutter() {
 
 # 检测并配置 Android SDK
 ensure_android_sdk() {
-    if [ -z "${ANDROID_HOME:-}" ] && [ -z "${ANDROID_SDK_ROOT:-}" ]; then
-        echo -e "\n\033[33m警告: 未检测到 ANDROID_HOME 环境变量\033[0m"
+    local sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+    local os_type
+    os_type=$(uname -s | tr '[:upper:]' '[:lower:]')
+
+    # 1. 如果当前环境没有配置，启动“全盘搜寻默认路径”逻辑
+    if [ -z "$sdk_root" ]; then
+        echo -e "\n\033[33m提示: 未检测到 ANDROID_HOME 环境变量，正在尝试搜寻默认安装路径...\033[0m"
         
-        # 尝试从 ~/.zshrc 中加载
-        if grep -q 'ANDROID_HOME' ~/.zshrc 2>/dev/null; then
-            echo "检测到 ~/.zshrc 中有 ANDROID_HOME 配置，正在重新加载..."
-            source ~/.zshrc
+        # 定义不同操作系统下的 Android SDK 常见默认安装路径
+        local candidates=(
+            "$HOME/Android/Sdk"              # Linux / macOS 常见自定义
+            # "$HOME/Library/Android/sdk"      # macOS 默认
+            "/usr/lib/android-sdk"           # Linux apt 默认
+            "/opt/android-sdk"               # 部分 Linux 自定义
+        )
+        
+        local path_dir
+        for path_dir in "${candidates[@]}"; do
+            if [ -d "$path_dir" ]; then
+                sdk_root="$path_dir"
+                break
+            fi
+        done
+
+        # 2. 如果找到了默认 SDK，自动帮用户“接上插头”
+        if [ -n "$sdk_root" ]; then
+            export ANDROID_HOME="$sdk_root"
+            export ANDROID_SDK_ROOT="$sdk_root"
+            echo -e "\033[32m自动寻找到 Android SDK 路径: ${ANDROID_HOME}\033[0m"
             
-            if [ -z "${ANDROID_HOME:-}" ]; then
-                echo -e "\033[31m错误: ~/.zshrc 中的 ANDROID_HOME 路径可能不正确\033[0m"
-                echo "请检查并修改为实际的 Android SDK 路径"
-                echo "示例: export ANDROID_HOME=\$HOME/Android/Sdk"
-            else
-                echo -e "\033[32mANDROID_HOME 已加载: ${ANDROID_HOME}\033[0m"
+            # 定位用户当前的 Shell 配置文件
+            local rc_file="$HOME/.zshrc"
+            [ ! -f "$rc_file" ] && rc_file="$HOME/.bashrc"
+            
+            # 自动把环境变量写进配置文件，免去用户手动复制的痛苦
+            if [ -f "$rc_file" ] && ! grep -q 'ANDROID_HOME' "$rc_file" 2>/dev/null; then
+                echo -e "\033[33m正在将 Android SDK 环境变量写入 ${rc_file}...\033[0m"
+                {
+                    echo ''
+                    echo '# Android SDK'
+                    echo "export ANDROID_HOME=\"$sdk_root\""
+                    echo "export ANDROID_SDK_ROOT=\"$sdk_root\""
+                    echo 'export PATH="$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools"'
+                } >> "$rc_file"
+                echo -e "\033[32m环境变量已自动写入，下次打开终端将自动生效！\033[0m"
             fi
         else
-            echo -e "\033[33m请在 ~/.zshrc 中配置 Android SDK:\033[0m"
-            echo ""
-            echo "# Android SDK"
-            echo "export ANDROID_HOME=\$HOME/Android/Sdk  # 改为你的实际路径"
-            echo "export PATH=\$PATH:\$ANDROID_HOME/cmdline-tools/latest/bin"
-            echo "export PATH=\$PATH:\$ANDROID_HOME/platform-tools"
-            echo ""
-            echo "然后运行: source ~/.zshrc"
+            # 3. 实在找不到了，再抛出警告和安装指引
+            echo -e "\033[31m错误: 无法在默认路径中找到 Android SDK。\033[0m"
+            echo "请确保您已安装 Android Studio / SDK，或者手动设置环境变量："
+            echo "export ANDROID_HOME=/你的实际SDK路径"
+            return 1
         fi
     else
-        echo -e "\033[32mAndroid SDK 已配置: ${ANDROID_HOME:-${ANDROID_SDK_ROOT}}\033[0m"
+        echo -e "\033[32mAndroid SDK 已通过现有环境变量配置: ${sdk_root}\033[0m"
     fi
 
-    if [ -n "${ANDROID_HOME:-${ANDROID_SDK_ROOT}}" ] && command -v flutter >/dev/null 2>&1; then
-        local SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT}}"
+    # 3. 同步 Flutter 的 Android SDK 配置
+    if command -v flutter >/dev/null 2>&1; then
         echo -e "\n\033[33m同步 Flutter 的 Android SDK 配置...\033[0m"
-        flutter config --android-sdk "${SDK_ROOT}" >/dev/null 2>&1 || true
-        echo -e "\033[32mFlutter Android SDK 已配置: ${SDK_ROOT}\033[0m"
+        flutter config --android-sdk "${sdk_root}" >/dev/null 2>&1 || true
+        echo -e "\033[32mFlutter Android SDK 同步成功\033[0m"
     fi
     
-    # 检查并接受 Android licenses
-    if [ -n "${ANDROID_HOME:-${ANDROID_SDK_ROOT}}" ]; then
-        echo -e "\n\033[33m检查 Android licenses...\033[0m"
-        
-        # 检查 sdkmanager 是否可用
-        local SDKMANAGER=""
-        if [ -f "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" ]; then
-            SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
-        elif [ -f "${ANDROID_HOME}/tools/bin/sdkmanager" ]; then
-            SDKMANAGER="${ANDROID_HOME}/tools/bin/sdkmanager"
-        fi
-        
-        if [ -n "${SDKMANAGER}" ]; then
-            # 自动接受所有 licenses
-            echo "自动接受 Android SDK licenses..."
-            yes | "${SDKMANAGER}" --licenses > /dev/null 2>&1 || true
-            echo -e "\033[32mAndroid licenses 已接受\033[0m"
-        else
-            echo -e "\033[33m警告: 未找到 sdkmanager，跳过 licenses 检查\033[0m"
-            echo "如果构建失败，请手动运行: flutter doctor --android-licenses"
-        fi
+    # 4. 检查并接受 Android licenses
+    echo -e "\n\033[33m检查 Android licenses...\033[0m"
+    local sdkmanager=""
+    if [ -f "${sdk_root}/cmdline-tools/latest/bin/sdkmanager" ]; then
+        sdkmanager="${sdk_root}/cmdline-tools/latest/bin/sdkmanager"
+    elif [ -f "${sdk_root}/tools/bin/sdkmanager" ]; then
+        sdkmanager="${sdk_root}/tools/bin/sdkmanager"
     fi
     
-    # 检测 Android NDK
-    if [ -n "${ANDROID_HOME:-${ANDROID_SDK_ROOT}}" ]; then
-        local SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT}}"
+    if [ -n "${sdkmanager}" ]; then
+        echo "自动接受 Android SDK licenses..."
+        yes | "${sdkmanager}" --licenses > /dev/null 2>&1 || true
+        echo -e "\033[32mAndroid licenses 校验通过\033[0m"
+    else
+        echo -e "\033[33m警告: 未找到 sdkmanager，跳过自动授权。若构建失败请手动运行: flutter doctor --android-licenses\033[0m"
+    fi
+    
+    # 5. 检测 Android NDK（支持多平台工具链路径）
+    if [ -z "${ANDROID_NDK_HOME:-}" ]; then
+        echo -e "\n\033[33m检查 Android NDK...\033[0m"
         
-        if [ -z "${ANDROID_NDK_HOME:-}" ]; then
-            echo -e "\n\033[33m检查 Android NDK...\033[0m"
+        if [ -d "${sdk_root}/ndk" ]; then
+            # 过滤干扰项，安全获取最新的纯数字版本号目录
+            local ndk_version
+            ndk_version=$(find "${sdk_root}/ndk" -maxdepth 1 -mindepth 1 -type d -exec basename {} \; 2>/dev/null | grep -E '^[0-9]' | sort -V | tail -n 1)
             
-            # 尝试从 SDK 目录查找 NDK
-            if [ -d "${SDK_ROOT}/ndk" ]; then
-                # 查找最新的 NDK 版本
-                local NDK_VERSION=$(ls -1 "${SDK_ROOT}/ndk" 2>/dev/null | sort -V | tail -n 1)
-                if [ -n "${NDK_VERSION}" ]; then
-                    export ANDROID_NDK_HOME="${SDK_ROOT}/ndk/${NDK_VERSION}"
-                    export ANDROID_NDK="${ANDROID_NDK_HOME}"  # 某些工具需要这个变量
-                    echo -e "\033[32m自动检测到 NDK (仅本次使用): ${ANDROID_NDK_HOME}\033[0m"
-                    
-                    # 验证 NDK 工具链是否存在
-                    if [ ! -d "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64" ]; then
-                        echo -e "\033[31m错误: NDK 工具链目录不存在\033[0m"
-                        echo "期望路径: ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64"
-                        return 1
-                    fi
-                else
-                    echo -e "\033[31m错误: ${SDK_ROOT}/ndk 目录存在但为空\033[0m"
-                    echo "请使用 Android Studio SDK Manager 安装 NDK，或者："
-                    echo "sdkmanager --install 'ndk;26.1.10909125'  # 安装指定版本"
+            if [ -n "$ndk_version" ]; then
+                export ANDROID_NDK_HOME="${sdk_root}/ndk/${ndk_version}"
+                export ANDROID_NDK="${ANDROID_NDK_HOME}"
+                echo -e "\033[32m自动映射 NDK (本次会话有效): ${ANDROID_NDK_HOME}\033[0m"
+                
+                # 动态适配 Linux/macOS 工具链路径
+                local arch_dir="linux-x86_64"
+                [ "$os_type" = "darwin" ] && arch_dir="darwin-x86_64"
+
+                if [ ! -d "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/${arch_dir}" ]; then
+                    echo -e "\033[31m错误: NDK 工具链预编译目录不存在\033[0m"
+                    echo "期望路径: ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/${arch_dir}"
                     return 1
                 fi
             else
-                echo -e "\033[31m未找到 NDK 目录: ${SDK_ROOT}/ndk\033[0m"
-                echo "请安装 Android NDK："
-                echo "1. 通过 Android Studio SDK Manager 安装"
-                echo "2. 或命令行: sdkmanager --install 'ndk;26.1.10909125'"
+                echo -e "\033[31m错误: ${sdk_root}/ndk 目录存在但未发现有效版本\033[0m"
+                echo "请运行: sdkmanager --install 'ndk;28.2.13676358' 来安装 NDK"
                 return 1
             fi
         else
-            echo -e "\033[32mAndroid NDK 已配置: ${ANDROID_NDK_HOME}\033[0m"
+            echo -e "\033[31m未找到 NDK 目录: ${sdk_root}/ndk\033[0m"
+            echo "请通过 Android Studio 安装 NDK，或运行: sdkmanager --install 'ndk;28.2.13676358'"
+            return 1
         fi
+    else
+        echo -e "\033[32mAndroid NDK 已配置: ${ANDROID_NDK_HOME}\033[0m"
     fi
 }
 
