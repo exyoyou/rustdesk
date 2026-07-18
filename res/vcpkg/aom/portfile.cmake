@@ -45,12 +45,13 @@ endif()
 vcpkg_cmake_configure(
     SOURCE_PATH ${SOURCE_PATH}
     OPTIONS
-        ${aom_target_cpu}
         -DENABLE_DOCS=OFF
         -DENABLE_EXAMPLES=OFF
         -DENABLE_TESTDATA=OFF
         -DENABLE_TESTS=OFF
         -DENABLE_TOOLS=OFF
+        -DAOM_TARGET_CPU=generic   # <-- 强行指定为通用 CPU（禁用所有架构相关的汇编）
+        -DENABLE_NASM=OFF          # <-- 强行关闭 NASM 探测
 )
 
 vcpkg_cmake_install()
