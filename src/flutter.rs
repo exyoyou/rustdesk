@@ -136,6 +136,12 @@ pub extern "C" fn rustdesk_core_main_args(args_len: *mut c_int) -> *mut *mut c_c
     return std::ptr::null_mut() as _;
 }
 
+#[cfg(windows)]
+#[no_mangle]
+pub extern "C" fn rustdesk_is_disable_installation() -> c_int {
+    hbb_common::config::is_disable_installation() as c_int
+}
+
 // https://gist.github.com/iskakaushik/1c5b8aa75c77479c33c4320913eebef6
 #[cfg(windows)]
 fn rust_args_to_c_args(args: Vec<String>, outlen: *mut c_int) -> *mut *mut c_char {
@@ -1437,7 +1443,7 @@ fn try_send_close_event(event_stream: &Option<StreamSink<EventToUI>>) {
 pub fn update_text_clipboard_required() {
     let is_required = sessions::get_sessions()
         .iter()
-        .any(|s| s.is_text_clipboard_required());
+        .any(|s| s.is_default() && s.is_text_clipboard_required());
     #[cfg(target_os = "android")]
     let _ = scrap::android::ffi::call_clipboard_manager_enable_client_clipboard(is_required);
     Client::set_is_text_clipboard_required(is_required);
@@ -1447,13 +1453,16 @@ pub fn update_text_clipboard_required() {
 pub fn update_file_clipboard_required() {
     let is_required = sessions::get_sessions()
         .iter()
-        .any(|s| s.is_file_clipboard_required());
+        .any(|s| s.is_default() && s.is_file_clipboard_required());
     Client::set_is_file_clipboard_required(is_required);
 }
 
 #[cfg(not(target_os = "ios"))]
 pub fn send_clipboard_msg(msg: Message, _is_file: bool) {
     for s in sessions::get_sessions() {
+        if !s.is_default() {
+            continue;
+        }
         #[cfg(feature = "unix-file-copy-paste")]
         if _is_file {
             if crate::is_support_file_copy_paste_num(s.lc.read().unwrap().version)
@@ -2295,6 +2304,16 @@ pub mod sessions {
     pub fn has_sessions_running(conn_type: ConnType) -> bool {
         SESSIONS.read().unwrap().iter().any(|((_, r#type), s)| {
             *r#type == conn_type && s.session_handlers.read().unwrap().len() != 0
+        })
+    }
+
+    #[inline]
+    #[cfg(not(target_os = "ios"))]
+    pub fn has_connected_sessions_running(conn_type: ConnType) -> bool {
+        SESSIONS.read().unwrap().iter().any(|((_, r#type), s)| {
+            *r#type == conn_type
+                && s.session_handlers.read().unwrap().len() != 0
+                && s.connection_round_state.lock().unwrap().is_connected()
         })
     }
 }
