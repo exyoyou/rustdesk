@@ -32,7 +32,7 @@ object FFI {
     external fun init(ctx: Context)
     external fun onAppStart(ctx: Context)
     external fun setClipboardManager(clipboardManager: RdClipboardManager)
-    external fun startServer(app_dir: String, custom_client_config: String)
+    external fun startServer(app_dir: String, home_dir: String, custom_client_config: String)
     external fun startService()
     external fun onVideoFrameUpdate(buf: ByteBuffer)
     // New API: pass three-plane YUV_420_888 frame; Rust will pack to I420 via libyuv
@@ -40,6 +40,7 @@ object FFI {
     external fun onAudioFrameUpdate(buf: ByteBuffer)
     external fun translateLocale(localeName: String, input: String): String
     external fun refreshScreen()
+    external fun closeAllSessions()
     external fun setFrameRawEnable(name: String, value: Boolean)
     external fun setCodecInfo(info: String)
     external fun getLocalOption(key: String): String

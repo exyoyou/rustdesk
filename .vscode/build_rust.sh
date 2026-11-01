@@ -18,18 +18,18 @@ echo "Working directory: ${WORKSPACE_ROOT}"
 source "${SCRIPT_DIR}/setup_env.sh"
 
 # 初始化并更新 git submodule
-if [ -d ".git" ]; then
-    echo -e "\n\033[33m检查 git submodule...\033[0m"
-    if [ -f ".gitmodules" ]; then
-        echo "初始化并更新 submodule..."
-        git submodule update --init --recursive
-        echo -e "\033[32mSubmodule 更新完成\033[0m"
-    else
-        echo "未检测到 .gitmodules 文件，跳过 submodule 初始化"
-    fi
-else
-    echo -e "\033[33m警告: 不是 git 仓库，跳过 submodule 检查\033[0m"
-fi
+# if [ -d ".git" ]; then
+#     echo -e "\n\033[33m检查 git submodule...\033[0m"
+#     if [ -f ".gitmodules" ]; then
+#         echo "初始化并更新 submodule..."
+#         git submodule update --init --recursive
+#         echo -e "\033[32mSubmodule 更新完成\033[0m"
+#     else
+#         echo "未检测到 .gitmodules 文件，跳过 submodule 初始化"
+#     fi
+# else
+#     echo -e "\033[33m警告: 不是 git 仓库，跳过 submodule 检查\033[0m"
+# fi
 
 # When running from VS Code task, keep the terminal open on failure
 on_error() {

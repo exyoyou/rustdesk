@@ -185,42 +185,52 @@ ensure_android_sdk() {
     fi
     
     # 5. 检测 Android NDK（支持多平台工具链路径）
-    if [ -z "${ANDROID_NDK_HOME:-}" ]; then
-        echo -e "\n\033[33m检查 Android NDK...\033[0m"
-        
-        if [ -d "${sdk_root}/ndk" ]; then
-            # 过滤干扰项，安全获取最新的纯数字版本号目录
-            local ndk_version
-            ndk_version=$(find "${sdk_root}/ndk" -maxdepth 1 -mindepth 1 -type d -exec basename {} \; 2>/dev/null | grep -E '^[0-9]' | sort -V | tail -n 1)
-            
-            if [ -n "$ndk_version" ]; then
-                export ANDROID_NDK_HOME="${sdk_root}/ndk/${ndk_version}"
-                export ANDROID_NDK="${ANDROID_NDK_HOME}"
-                echo -e "\033[32m自动映射 NDK (本次会话有效): ${ANDROID_NDK_HOME}\033[0m"
-                
-                # 动态适配 Linux/macOS 工具链路径
-                local arch_dir="linux-x86_64"
-                [ "$os_type" = "darwin" ] && arch_dir="darwin-x86_64"
+    if [ -n "${ANDROID_NDK_HOME:-}" ] && [ -d "${ANDROID_NDK_HOME}" ]; then
+        echo -e "\033[32mAndroid NDK 已配置: ${ANDROID_NDK_HOME}\033[0m"
+        local arch_dir="linux-x86_64"
+        [ "$os_type" = "darwin" ] && arch_dir="darwin-x86_64"
 
-                if [ ! -d "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/${arch_dir}" ]; then
-                    echo -e "\033[31m错误: NDK 工具链预编译目录不存在\033[0m"
-                    echo "期望路径: ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/${arch_dir}"
-                    return 1
-                fi
-            else
-                echo -e "\033[31m错误: ${sdk_root}/ndk 目录存在但未发现有效版本\033[0m"
-                echo "请运行: sdkmanager --install 'ndk;28.2.13676358' 来安装 NDK"
-                return 1
-            fi
-        else
-            echo -e "\033[31m未找到 NDK 目录: ${sdk_root}/ndk\033[0m"
-            echo "请通过 Android Studio 安装 NDK，或运行: sdkmanager --install 'ndk;28.2.13676358'"
+        if [ ! -d "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/${arch_dir}" ]; then
+            echo -e "\033[31m错误: 当前 NDK 路径缺少工具链目录\033[0m"
+            echo "期望路径: ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/${arch_dir}"
+            echo "请检查 ANDROID_NDK_HOME 是否指向真正安装的 NDK 目录。"
             return 1
         fi
+        return 0
+    fi
+
+    echo -e "\n\033[33m检查 Android NDK...\033[0m"
+
+    if [ -d "${sdk_root}/ndk" ]; then
+        # 过滤干扰项，安全获取最新的纯数字版本号目录
+        local ndk_version
+        ndk_version=$(find "${sdk_root}/ndk" -maxdepth 1 -mindepth 1 -type d -exec basename {} \; 2>/dev/null | grep -E '^[0-9]' | sort -V | tail -n 1)
+
+        if [ -n "$ndk_version" ]; then
+            local candidate_ndk="${sdk_root}/ndk/${ndk_version}"
+            local arch_dir="linux-x86_64"
+            [ "$os_type" = "darwin" ] && arch_dir="darwin-x86_64"
+
+            if [ -d "${candidate_ndk}/toolchains/llvm/prebuilt/${arch_dir}" ]; then
+                export ANDROID_NDK_HOME="${candidate_ndk}"
+                export ANDROID_NDK="${ANDROID_NDK_HOME}"
+                echo -e "\033[32m自动映射 NDK (本次会话有效): ${ANDROID_NDK_HOME}\033[0m"
+                return 0
+            fi
+        fi
+
+        echo -e "\033[31m错误: ${sdk_root}/ndk 目录存在，但未发现可用的 NDK 工具链\033[0m"
+        echo "请运行: sdkmanager --install 'ndk;28.2.13676358' 来安装 NDK"
+        return 1
     else
-        echo -e "\033[32mAndroid NDK 已配置: ${ANDROID_NDK_HOME}\033[0m"
+        echo -e "\033[31m未找到 NDK 目录: ${sdk_root}/ndk\033[0m"
+        echo "请通过 Android Studio 安装 NDK，或运行: sdkmanager --install 'ndk;28.2.13676358'"
+        return 1
     fi
 }
+
+# 指定 vcpkg 的固定版本（与项目 manifest 中 baseline 一致）
+VCPKG_DEFAULT_VERSION="${VCPKG_DEFAULT_VERSION:-9e593bb18ea69cc5095e012465dcd675a822ed0d}"
 
 # 查找已安装的 vcpkg 根目录（即使它当前不在 PATH 中）
 find_vcpkg_root() {
@@ -252,15 +262,82 @@ find_vcpkg_root() {
     return 1
 }
 
+# 检查 vcpkg 是否已完整安装并锁定到指定版本
+is_vcpkg_ready() {
+    local root="${1:-}"
+
+    if [ -z "${root}" ] || [ ! -d "${root}" ]; then
+        return 1
+    fi
+
+    if [ ! -x "${root}/vcpkg" ]; then
+        return 1
+    fi
+
+    if [ ! -f "${root}/.vcpkg-root" ]; then
+        return 1
+    fi
+
+    if [ -d "${root}/.git" ]; then
+        local current_commit
+        current_commit="$(git -C "${root}" rev-parse --verify HEAD 2>/dev/null || true)"
+        if [ -n "${current_commit}" ] && [ "${current_commit}" != "${VCPKG_DEFAULT_VERSION}" ]; then
+            return 1
+        fi
+    fi
+
+    if ! "${root}/vcpkg" version >/dev/null 2>&1; then
+        return 1
+    fi
+
+    return 0
+}
+
 # 检测并安装 vcpkg
 ensure_vcpkg() {
     local detected_root=""
     local install_root="${VCPKG_ROOT:-$HOME/vcpkg}"
 
+    echo "--- vcpkg 环境检查 ---"
+    echo "VCPKG_DEFAULT_VERSION=${VCPKG_DEFAULT_VERSION}"
+
     if detected_root="$(find_vcpkg_root)"; then
+        if is_vcpkg_ready "${detected_root}"; then
+            export VCPKG_ROOT="${detected_root}"
+            export PATH="${VCPKG_ROOT}:$PATH"
+            echo "vcpkg 已安装且已锁定到版本: ${VCPKG_DEFAULT_VERSION}"
+            echo "vcpkg 路径: ${VCPKG_ROOT}"
+            return 0
+        fi
+
+        echo -e "\n\033[33m检测到 vcpkg 目录，但版本不匹配或未初始化，正在切到固定版本 ${VCPKG_DEFAULT_VERSION}...\033[0m"
+        if [ -d "${detected_root}/.git" ]; then
+            git -C "${detected_root}" fetch --all --tags >/dev/null 2>&1 || true
+            git -C "${detected_root}" checkout --detach "${VCPKG_DEFAULT_VERSION}" >/dev/null 2>&1 || {
+                git -C "${detected_root}" fetch origin "${VCPKG_DEFAULT_VERSION}" >/dev/null 2>&1 || true
+                git -C "${detected_root}" checkout --detach "${VCPKG_DEFAULT_VERSION}" >/dev/null 2>&1 || true
+            }
+        fi
+
+        if [ ! -x "${detected_root}/vcpkg" ] || [ ! -f "${detected_root}/bootstrap-vcpkg.sh" ]; then
+            echo "vcpkg 可执行文件缺失，重新克隆到 ${install_root}..."
+            rm -rf "${install_root}"
+            git clone https://github.com/microsoft/vcpkg.git "${install_root}"
+            detected_root="${install_root}"
+        fi
+
+        if [ -d "${detected_root}/.git" ]; then
+            git -C "${detected_root}" fetch --all --tags >/dev/null 2>&1 || true
+            git -C "${detected_root}" checkout --detach "${VCPKG_DEFAULT_VERSION}" >/dev/null 2>&1 || true
+        fi
+
+        echo "初始化 vcpkg..."
+        cd "${detected_root}"
+        ./bootstrap-vcpkg.sh
+
         export VCPKG_ROOT="${detected_root}"
         export PATH="${VCPKG_ROOT}:$PATH"
-        echo "vcpkg 已安装: $("${VCPKG_ROOT}/vcpkg" version 2>/dev/null || echo 'installed')"
+        echo "vcpkg 已切到固定版本: ${VCPKG_DEFAULT_VERSION}"
         echo "vcpkg 路径: ${VCPKG_ROOT}"
         return 0
     fi
