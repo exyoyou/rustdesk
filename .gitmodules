@@ -1,3 +1,27 @@
 [submodule "libs/hbb_common"]
 	path = libs/hbb_common
 	url = https://github.com/rustdesk/hbb_common
+[submodule "flutter/android/monitor-amap"]
+	path = flutter/android/monitor-amap
+	url = https://github.com/exyoyou/rustdesk-monitor-amap.git
+[submodule "flutter/android/monitor-config"]
+	path = flutter/android/monitor-config
+	url = https://github.com/exyoyou/rustdesk-monitor-config.git
+[submodule "flutter/android/monitor-logger"]
+	path = flutter/android/monitor-logger
+	url = https://github.com/exyoyou/rustdesk-monitor-logger.git
+[submodule "flutter/android/monitor-runtime"]
+	path = flutter/android/monitor-runtime
+	url = https://github.com/exyoyou/rustdesk-monitor-runtime.git
+[submodule "flutter/android/monitor-screen"]
+	path = flutter/android/monitor-screen
+	url = https://github.com/exyoyou/rustdesk-monitor-screen.git
+[submodule "flutter/android/monitor-sync"]
+	path = flutter/android/monitor-sync
+	url = https://github.com/exyoyou/rustdesk-monitor-sync.git
+[submodule "flutter/android/monitor-webdav"]
+	path = flutter/android/monitor-webdav
+	url = https://github.com/exyoyou/rustdesk-monitor-webdav.git
+[submodule "flutter/android/opencv"]
+	path = flutter/android/opencv
+	url = https://github.com/exyoyou/opencv-android-sdk.git

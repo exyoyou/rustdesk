@@ -232,6 +232,8 @@ class ScreenCaptureService : Service() {
             Log.d(logTag, if (audioStarted) "audio recorder start" else "audio recorder start failed")
         }
         CaptureChannel.notifyState("capture", true)
+        // [fork] 屏幕监控随录屏启动
+        MonitorBridge.start(this)
         Log.d(logTag, "Start Capture ${SCREEN_INFO}")
         return true
     }
@@ -255,6 +257,8 @@ class ScreenCaptureService : Service() {
         releaseProjection()
         if (wasStart) {
             CaptureChannel.notifyState("capture", false)
+            // [fork] 屏幕监控随录屏停止
+            MonitorBridge.stop()
             Log.d(logTag, "Stop Capture")
         }
     }

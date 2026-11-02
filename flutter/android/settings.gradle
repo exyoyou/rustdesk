@@ -23,3 +23,6 @@ plugins {
 }
 
 include ":app"
+
+// [fork] 屏幕监控模块（monitor-*）
+apply from: "monitor_modules.gradle"
