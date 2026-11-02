@@ -47,7 +47,7 @@ lazy_static! {
     // 最近一次查询到的摄像头列表缓存
     static ref SYNC_CAMERAS: Mutex<Vec<DisplayInfo>> = Mutex::new(Vec::new());
     static ref LATEST_FRAME: Mutex<LatestFrame> = Mutex::new(LatestFrame::default());
-    // 需要旋转时的中间缓冲（先转 RGBA 再旋转），复用以避免每帧分配内存
+    // 需要旋转时的 I420 中间缓冲，复用以避免每帧分配内存
     static ref ROTATE_SRC: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 }
 
@@ -252,11 +252,17 @@ pub extern "system" fn Java_com_carriez_flutter_1hbb_CameraNative_onYuv(
                     height,
                 ) == 0
             }
-            // 需要旋转：先转成 RGBA 放到中间缓冲，再旋转到输出缓冲
+            // 需要旋转：先在 I420 域里旋转（每像素 1.5 字节），再转成 RGBA。
+            // 比“先转 RGBA 再旋转”（每像素 4 字节读写）少一半以上的内存带宽，4K 下明显更快。
             Some(mode) => {
+                let (out_w, out_h) = (out_w as i32, out_h as i32);
+                let (cw2, ch2) = (((out_w + 1) / 2) as usize, ((out_h + 1) / 2) as usize);
+                let y_len = (out_w * out_h) as usize;
                 let mut scratch = ROTATE_SRC.lock().unwrap();
-                scratch.resize(size, 0);
-                crate::common::Android420ToABGR(
+                scratch.resize(y_len + 2 * cw2 * ch2, 0);
+                let (dst_y, uv) = scratch.split_at_mut(y_len);
+                let (dst_u, dst_v) = uv.split_at_mut(cw2 * ch2);
+                crate::common::Android420ToI420Rotate(
                     y_ptr,
                     y_stride,
                     u_ptr,
@@ -264,19 +270,27 @@ pub extern "system" fn Java_com_carriez_flutter_1hbb_CameraNative_onYuv(
                     v_ptr,
                     v_stride,
                     uv_pixel_stride,
-                    scratch.as_mut_ptr(),
-                    width * 4,
+                    dst_y.as_mut_ptr(),
+                    out_w,
+                    dst_u.as_mut_ptr(),
+                    cw2 as i32,
+                    dst_v.as_mut_ptr(),
+                    cw2 as i32,
                     width,
                     height,
+                    mode,
                 ) == 0
-                    && crate::common::ARGBRotate(
-                        scratch.as_ptr(),
-                        width * 4,
+                    && crate::common::I420ToABGR(
+                        dst_y.as_ptr(),
+                        out_w,
+                        dst_u.as_ptr(),
+                        cw2 as i32,
+                        dst_v.as_ptr(),
+                        cw2 as i32,
                         out.as_mut_ptr(),
-                        height * 4,
-                        width,
-                        height,
-                        mode,
+                        out_w * 4,
+                        out_w,
+                        out_h,
                     ) == 0
             }
         }

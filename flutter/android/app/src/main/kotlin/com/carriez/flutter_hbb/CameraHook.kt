@@ -55,13 +55,34 @@ object CameraHook {
         context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
     /**
-     * 列出所有可用摄像头，每个摄像头选一个不超过上限的最大 YUV 输出尺寸。
+     * 列出所有可用摄像头（带缓存）。摄像头特性是固定的，而 Rust 每次连接/切换都会查询，
+     * 每次都走 Camera2 binder 很慢，所以按“最高分辨率设置”缓存结果；设置变化时自动重新查询。
+     */
+    private var cachedHeight = -1
+    private var cachedList: List<Choice> = emptyList()
+
+    @Synchronized
+    fun list(context: Context): List<Choice> {
+        val height = maxHeight(context)
+        if (height == cachedHeight && cachedList.isNotEmpty()) {
+            return cachedList
+        }
+        val result = queryList(context, height)
+        // 查询为空（如外接摄像头暂时不在）不缓存，下次再查
+        if (result.isNotEmpty()) {
+            cachedHeight = height
+            cachedList = result
+        }
+        return result
+    }
+
+    /**
+     * 实际查询：每个摄像头选一个不超过上限的最大 YUV 输出尺寸。
      * 列表下标就是 Rust 侧的“显示器下标”，控制端切换摄像头时传的就是它。
      */
-    fun list(context: Context): List<Choice> {
+    private fun queryList(context: Context, maxHeight: Int): List<Choice> {
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val result = ArrayList<Choice>()
-        val maxHeight = maxHeight(context)
         // 像素上限：高×(高×16/9)
         val maxPixels = maxHeight * (maxHeight * 16 / 9)
         try {

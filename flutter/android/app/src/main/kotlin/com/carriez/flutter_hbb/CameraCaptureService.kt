@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.ImageFormat
 import android.hardware.camera2.CameraCaptureSession
+import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
@@ -19,8 +20,10 @@ import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Process
 import android.util.Log
+import android.util.Range
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import kotlin.math.abs
 
 /**
  * 摄像头 + 麦克风采集的前台服务。
@@ -33,8 +36,11 @@ class CameraCaptureService : Service() {
     companion object {
         private const val NOTIFY_ID = 3
         private const val NOTIFY_CHANNEL_ID = "RustDeskCamera"
-        // 最小帧间隔（66ms ≈ 15fps），用来限制帧率、降低 CPU 和编码压力
-        private const val MIN_FRAME_INTERVAL_MS = 66L
+        // 最小帧间隔。传感器帧率已通过 AE_TARGET_FPS_RANGE 限到约 15fps，这里只是兜底：
+        // 设备不支持低帧率范围时丢掉多余帧。阈值要小于 66ms，否则帧间隔的毫秒抖动会让一半的帧被误丢。
+        private const val MIN_FRAME_INTERVAL_MS = 50L
+        // 目标传感器帧率：降低 ISP、内存带宽、CPU 转换和编码的负载，也更省电、低光下曝光更长
+        private const val TARGET_FPS = 15
         const val EXTRA_INDEX = "camera_index"
 
         // 当前运行的服务实例，供 CameraHook 直接调用 startStreaming/stopStreaming
@@ -64,7 +70,8 @@ class CameraCaptureService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        thread = HandlerThread("CameraService", Process.THREAD_PRIORITY_BACKGROUND).apply {
+        // 线程优先级用默认值，不用 BACKGROUND：后台线程 CPU 份额小，会让每帧转换被饥饿而丢帧
+        thread = HandlerThread("CameraService", Process.THREAD_PRIORITY_DEFAULT).apply {
             start()
             handler = Handler(looper)
         }
@@ -216,6 +223,8 @@ class CameraCaptureService : Service() {
             val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                 addTarget(reader.surface)
                 set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+                // 让传感器本身只出 ~15fps，而不是 30fps 出图后再丢一半（4K 下差别很大）
+                pickFpsRange(camera.id)?.let { set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
             }.build()
             camera.createCaptureSession(listOf(reader.surface), object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(captureSession: CameraCaptureSession) {
@@ -241,6 +250,22 @@ class CameraCaptureService : Service() {
         } catch (e: Exception) {
             Log.e(logTag, "startSession failed", e)
             release()
+        }
+    }
+
+    /**
+     * 从摄像头支持的帧率范围里选上限最接近 [TARGET_FPS] 的；上限相同时选下限更高的（帧率更稳）。
+     * 查询失败返回 null，此时不设置，用默认帧率。
+     */
+    private fun pickFpsRange(cameraId: String): Range<Int>? {
+        return try {
+            val manager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            manager.getCameraCharacteristics(cameraId)
+                .get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+                ?.minWithOrNull(compareBy<Range<Int>>({ abs(it.upper - TARGET_FPS) }, { -it.lower }))
+        } catch (e: Exception) {
+            Log.w(logTag, "pick fps range failed", e)
+            null
         }
     }
 

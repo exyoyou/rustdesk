@@ -71,7 +71,9 @@ class ScreenCaptureService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        serviceThread = HandlerThread("CaptureService", Process.THREAD_PRIORITY_BACKGROUND).apply {
+        // 线程优先级用默认值，不用 BACKGROUND：后台线程的 CPU 份额很小，用户在手机上玩游戏/看视频时
+        // 每帧的拷贝会被饥饿，远程端会明显卡顿
+        serviceThread = HandlerThread("CaptureService", Process.THREAD_PRIORITY_DEFAULT).apply {
             start()
             serviceHandler = Handler(looper)
         }
@@ -274,7 +276,8 @@ class ScreenCaptureService : Service() {
             SCREEN_INFO.width,
             SCREEN_INFO.height,
             PixelFormat.RGBA_8888,
-            4
+            // 用 acquireLatestImage 只取最新帧，3 个缓冲足够；每个缓冲是整屏 RGBA（如 1440x3120 约 18MB），少一个省一个
+            3
         ).apply {
             setOnImageAvailableListener({ reader -> onImageAvailable(reader) }, serviceHandler)
         }
