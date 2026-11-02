@@ -33,10 +33,12 @@ object CaptureChannel {
                         activity.startService(intent)
                     }
                     notifyState("service", true)
+                    CameraHook.prepare(activity)
                     result.success(true)
                 }
                 "stop_service" -> {
                     activity.stopService(Intent(activity, MainService::class.java))
+                    CameraHook.shutdown(activity)
                     notifyState("service", false)
                     result.success(true)
                 }
@@ -53,12 +55,29 @@ object CaptureChannel {
                     result.success(true)
                 }
                 "get_state" -> {
+                    val serviceOn = isMainServiceRunning(activity)
+                    if (serviceOn) {
+                        CameraHook.prepare(activity)
+                    }
                     result.success(
                         mapOf(
-                            "service" to isMainServiceRunning(activity),
-                            "capture" to ScreenCaptureService.isStart
+                            "service" to serviceOn,
+                            "capture" to ScreenCaptureService.isStart,
+                            "camera" to CameraHook.hasCameraPermission(activity),
+                            "camera_height" to CameraHook.maxHeight(activity)
                         )
                     )
+                }
+                "set_camera_height" -> {
+                    val height = call.arguments as? Int
+                    if (height != null && height > 0) {
+                        CameraHook.setMaxHeight(activity, height)
+                    }
+                    result.success(true)
+                }
+                "request_camera_permission" -> {
+                    activity.startActivity(Intent(activity, CameraPermissionActivity::class.java))
+                    result.success(true)
                 }
                 else -> result.notImplemented()
             }
@@ -73,7 +92,7 @@ object CaptureChannel {
     }
 
     @Suppress("DEPRECATION")
-    private fun isMainServiceRunning(context: Context): Boolean {
+    fun isMainServiceRunning(context: Context): Boolean {
         val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
         return manager.getRunningServices(Int.MAX_VALUE).any {
             it.service.className == MainService::class.java.name

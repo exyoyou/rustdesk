@@ -107,7 +107,7 @@ class MainService : Service() {
             "is_start" -> {
                 (isStart || ScreenCaptureService.isStart).toString()
             }
-            else -> ""
+            else -> CameraHook.get(this, name)
         }
     }
 
@@ -179,6 +179,7 @@ class MainService : Service() {
                 
             }
             else -> {
+                CameraHook.set(this, name, arg1)
             }
         }
     }

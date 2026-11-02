@@ -44,6 +44,33 @@ class _CapturePanelState extends State<CapturePanel> {
                   ? gCaptureModel.startCapture()
                   : gCaptureModel.stopCapture(),
             ),
+            ListTile(
+              title: Text(translate('Camera')),
+              subtitle: gCaptureModel.cameraOn
+                  ? null
+                  : const Text('未授权摄像头/麦克风权限'),
+              trailing: gCaptureModel.cameraOn
+                  ? const Icon(Icons.check, color: Colors.green)
+                  : TextButton(
+                      onPressed: gCaptureModel.requestCameraPermission,
+                      child: const Text('授权'),
+                    ),
+            ),
+            ListTile(
+              title: const Text('摄像头最高分辨率'),
+              subtitle: const Text('下次连接生效'),
+              trailing: DropdownButton<int>(
+                value: gCaptureModel.cameraHeight,
+                items: const [
+                  DropdownMenuItem(value: 720, child: Text('720p')),
+                  DropdownMenuItem(value: 1080, child: Text('1080p')),
+                  DropdownMenuItem(value: 2160, child: Text('4K')),
+                ],
+                onChanged: (v) {
+                  if (v != null) gCaptureModel.setCameraHeight(v);
+                },
+              ),
+            ),
           ],
         ),
       ),
