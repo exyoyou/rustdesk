@@ -14,6 +14,10 @@ class CapturePermissionActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 【摄像头钩子】开机自启时只有这个 Activity 会被拉到前台。Android 12+/15+ 不允许从后台或
+        // BOOT_COMPLETED 直接启动摄像头/麦克风类型的前台服务，所以趁 Activity 在前台时把摄像头服务空转起来，
+        // 之后控制端查看摄像头才能在后台打开摄像头。
+        CameraHook.prepare(this)
         val manager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
