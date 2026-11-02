@@ -6,6 +6,7 @@ import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/main.dart';
 import 'package:flutter_hbb/mobile/pages/settings_page.dart';
 import 'package:flutter_hbb/models/chat_model.dart';
+import 'package:flutter_hbb/models/capture_model.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:get/get.dart';
 import 'package:window_manager/window_manager.dart';
@@ -442,11 +443,25 @@ class ServerModel with ChangeNotifier {
     }
   }
 
+  /// Start the service only (device online), without screen capture.
+  Future<void> startServiceOnly() async {
+    _isStart = true;
+    notifyListeners();
+    parent.target?.ffiModel.updateEventListener(parent.target!.sessionId, "");
+    await gCaptureModel.startService();
+    await bind.mainStartService();
+    updateClientState();
+    if (isAndroid) {
+      androidUpdatekeepScreenOn();
+    }
+  }
+
   /// Stop the screen sharing service.
   Future<void> stopService() async {
     _isStart = false;
     closeAll();
     await parent.target?.invokeMethod("stop_service");
+    await gCaptureModel.stopService();
     await bind.mainStopService();
     notifyListeners();
     // for androidUpdatekeepScreenOn only

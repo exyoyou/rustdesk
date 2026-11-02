@@ -98,6 +98,17 @@
                 android:value="@string/foreground_service_special_use_subtype" />
         </service>
 
+        <activity
+            android:name=".CapturePermissionActivity"
+            android:excludeFromRecents="true"
+            android:theme="@style/Transparent" />
+
+        <service
+            android:name=".ScreenCaptureService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+
         <service
             android:name=".FloatingWindowService"
             android:enabled="true" />

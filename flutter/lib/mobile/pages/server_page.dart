@@ -13,6 +13,7 @@ import '../../common/widgets/dialog.dart';
 import '../../consts.dart';
 import '../../models/platform_model.dart';
 import '../../models/server_model.dart';
+import '../widgets/capture_panel.dart';
 import 'home_page.dart';
 
 class ServerPage extends StatefulWidget implements PageShape {
@@ -214,6 +215,7 @@ class _ServerPageState extends State<ServerPage> {
                             ? ServerInfo()
                             : ServiceNotRunningNotification(),
                         const ConnectionManager(),
+                        if (isAndroid) const CapturePanel(),
                         const PermissionChecker(),
                         SizedBox.fromSize(size: const Size(0, 15.0)),
                       ],

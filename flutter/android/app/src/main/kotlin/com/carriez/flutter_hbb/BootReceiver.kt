@@ -33,8 +33,7 @@ class BootReceiver : BroadcastReceiver() {
             }
 
             val it = Intent(context, MainService::class.java).apply {
-                action = ACT_INIT_MEDIA_PROJECTION_AND_SERVICE
-                putExtra(EXT_INIT_FROM_BOOT, true)
+                action = ACT_START_SERVICE_ONLY
             }
             Toast.makeText(context, "RustDesk is Open", Toast.LENGTH_LONG).show()
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -42,6 +41,9 @@ class BootReceiver : BroadcastReceiver() {
             } else {
                 context.startService(it)
             }
+            context.startActivity(Intent(context, CapturePermissionActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
         }
     }
 }

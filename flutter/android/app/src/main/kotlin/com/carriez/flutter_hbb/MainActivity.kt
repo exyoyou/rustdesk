@@ -89,6 +89,7 @@ class MainActivity : FlutterActivity() {
             channelTag
         )
         initFlutterChannel(flutterMethodChannel!!)
+        CaptureChannel.register(this, flutterEngine.dartExecutor.binaryMessenger)
         thread {
             try {
                 setCodecInfo()

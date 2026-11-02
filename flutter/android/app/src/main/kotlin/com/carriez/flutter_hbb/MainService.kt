@@ -105,7 +105,7 @@ class MainService : Service() {
                 }.toString()
             }
             "is_start" -> {
-                isStart.toString()
+                (isStart || ScreenCaptureService.isStart).toString()
             }
             else -> ""
         }
@@ -346,6 +346,10 @@ class MainService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d("whichService", "this service: ${Thread.currentThread()}")
         super.onStartCommand(intent, flags, startId)
+        if (intent?.action == ACT_START_SERVICE_ONLY) {
+            FFI.startService()
+            return START_NOT_STICKY
+        }
         if (intent?.action == ACT_INIT_MEDIA_PROJECTION_AND_SERVICE) {
             if (intent.getBooleanExtra(EXT_INIT_FROM_BOOT, false)) {
                 FFI.startService()
@@ -632,7 +636,7 @@ class MainService : Service() {
         Log.d(logTag, "Stop Capture")
         captureRestartPending = false
         captureRestartInVoiceCall = false
-        FFI.setFrameRawEnable("video",false)
+        if (!ScreenCaptureService.isStart) FFI.setFrameRawEnable("video",false)
         _isStart = false
         MainActivity.rdClipboardManager?.setCaptureStarted(_isStart)
         // release video
