@@ -8,7 +8,11 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Log
 
-/** Requests the MediaProjection permission and starts [ScreenCaptureService] only. */
+/**
+ * Requests the MediaProjection permission and starts [ScreenCaptureService] only.
+ * 透明 Activity：只负责申请录屏授权，授权结果交给 ScreenCaptureService，自己立刻 finish。
+ * 手动点“屏幕录制”和开机自启都走这里。
+ */
 class CapturePermissionActivity : Activity() {
     private val logTag = "CapturePermission"
 

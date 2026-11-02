@@ -32,6 +32,8 @@ class BootReceiver : BroadcastReceiver() {
                 return
             }
 
+            // [fork] 开机只启动“服务”（设备上线），不再绑定屏幕录制；
+            // 原来的 ACT_INIT_MEDIA_PROJECTION_AND_SERVICE 会把录屏和服务绑在一起
             val it = Intent(context, MainService::class.java).apply {
                 action = ACT_START_SERVICE_ONLY
             }
@@ -41,6 +43,8 @@ class BootReceiver : BroadcastReceiver() {
             } else {
                 context.startService(it)
             }
+            // [fork] 开机后拉起透明 Activity 申请录屏授权（授权后由它启动 ScreenCaptureService）；
+            // 它同时是开机时唯一在前台的界面，摄像头服务也借它启动
             context.startActivity(Intent(context, CapturePermissionActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             })

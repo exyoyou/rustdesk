@@ -105,8 +105,10 @@ class MainService : Service() {
                 }.toString()
             }
             "is_start" -> {
+                // [fork] 录屏改由 ScreenCaptureService 负责，两者任一在运行都算“已开始”
                 (isStart || ScreenCaptureService.isStart).toString()
             }
+            // [fork] 未识别的 get 请求交给 CameraHook（如 "camera_info" 获取摄像头列表）
             else -> CameraHook.get(this, name)
         }
     }
@@ -179,6 +181,7 @@ class MainService : Service() {
                 
             }
             else -> {
+                // [fork] 未识别的 set 请求交给 CameraHook（"start_camera" / "stop_camera"）
                 CameraHook.set(this, name, arg1)
             }
         }
@@ -348,6 +351,8 @@ class MainService : Service() {
         Log.d("whichService", "this service: ${Thread.currentThread()}")
         super.onStartCommand(intent, flags, startId)
         if (intent?.action == ACT_START_SERVICE_ONLY) {
+            // [fork] 只让设备上线（启动 Rust 服务），不初始化 MediaProjection、不录屏；
+            // 返回 START_NOT_STICKY：被杀后不自动重启
             FFI.startService()
             return START_NOT_STICKY
         }
@@ -637,6 +642,7 @@ class MainService : Service() {
         Log.d(logTag, "Stop Capture")
         captureRestartPending = false
         captureRestartInVoiceCall = false
+        // [fork] 如果 ScreenCaptureService 还在录屏，不能关闭 video 帧通道，否则录屏会断流
         if (!ScreenCaptureService.isStart) FFI.setFrameRawEnable("video",false)
         _isStart = false
         MainActivity.rdClipboardManager?.setCaptureStarted(_isStart)

@@ -443,11 +443,13 @@ class ServerModel with ChangeNotifier {
     }
   }
 
+  /// [fork] 只启动服务（设备上线），不启动屏幕录制；录屏由 CapturePanel 单独控制。
   /// Start the service only (device online), without screen capture.
   Future<void> startServiceOnly() async {
     _isStart = true;
     notifyListeners();
     parent.target?.ffiModel.updateEventListener(parent.target!.sessionId, "");
+    // 通知原生侧启动 MainService（ACT_START_SERVICE_ONLY），然后启动 Rust 服务
     await gCaptureModel.startService();
     await bind.mainStartService();
     updateClientState();
@@ -461,6 +463,7 @@ class ServerModel with ChangeNotifier {
     _isStart = false;
     closeAll();
     await parent.target?.invokeMethod("stop_service");
+    // [fork] 同步关闭独立的服务通道（ScreenCaptureService 由用户在面板里单独关闭）
     await gCaptureModel.stopService();
     await bind.mainStopService();
     notifyListeners();

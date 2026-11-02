@@ -15,6 +15,8 @@ class _CapturePanelState extends State<CapturePanel> {
   @override
   void initState() {
     super.initState();
+    // 先同步原生真实状态；如果原生服务已经在运行（如开机自启），
+    // 就补上 Dart/Rust 侧的服务启动，让界面状态和实际一致
     gCaptureModel.refresh().then((_) {
       if (gCaptureModel.serviceOn && !gFFI.serverModel.isStart) {
         gFFI.serverModel.startServiceOnly();
@@ -44,6 +46,7 @@ class _CapturePanelState extends State<CapturePanel> {
                   ? gCaptureModel.startCapture()
                   : gCaptureModel.stopCapture(),
             ),
+            // 摄像头/麦克风权限行：未授权时显示“授权”按钮
             ListTile(
               title: Text(translate('Camera')),
               subtitle: gCaptureModel.cameraOn
@@ -56,6 +59,7 @@ class _CapturePanelState extends State<CapturePanel> {
                       child: const Text('授权'),
                     ),
             ),
+            // 摄像头最高分辨率选择：越高越清晰，但 CPU 和带宽压力越大
             ListTile(
               title: const Text('摄像头最高分辨率'),
               subtitle: const Text('下次连接生效'),

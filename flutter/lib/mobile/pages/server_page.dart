@@ -215,6 +215,7 @@ class _ServerPageState extends State<ServerPage> {
                             ? ServerInfo()
                             : ServiceNotRunningNotification(),
                         const ConnectionManager(),
+                        // [fork] 服务/录屏/摄像头 的独立开关面板，仅 Android 显示
                         if (isAndroid) const CapturePanel(),
                         const PermissionChecker(),
                         SizedBox.fromSize(size: const Size(0, 15.0)),

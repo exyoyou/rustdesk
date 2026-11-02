@@ -15,6 +15,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- [fork] 摄像头功能：摄像头权限、摄像头前台服务权限；required=false 表示没有摄像头的设备也能安装 -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
@@ -101,22 +102,26 @@
                 android:value="@string/foreground_service_special_use_subtype" />
         </service>
 
+        <!-- [fork] 申请屏幕录制授权用的透明 Activity（授权后启动 ScreenCaptureService） -->
         <activity
             android:name=".CapturePermissionActivity"
             android:excludeFromRecents="true"
             android:theme="@style/Transparent" />
 
+        <!-- [fork] 独立的录屏前台服务，与 MainService（设备上线）互不依赖 -->
         <service
             android:name=".ScreenCaptureService"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
 
+        <!-- [fork] 申请摄像头/麦克风权限用的透明 Activity -->
         <activity
             android:name=".CameraPermissionActivity"
             android:excludeFromRecents="true"
             android:theme="@style/Transparent" />
 
+        <!-- [fork] 摄像头+麦克风采集的前台服务；类型必须声明为 camera|microphone，否则后台无法访问摄像头 -->
         <service
             android:name=".CameraCaptureService"
             android:enabled="true"

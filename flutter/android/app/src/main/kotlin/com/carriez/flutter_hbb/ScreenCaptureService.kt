@@ -37,6 +37,12 @@ const val EXT_CAPTURE_RESULT_INTENT = "CAPTURE_RESULT_INTENT"
  * Screen capture that runs independently of [MainService].
  * Frames go to [FrameDispatcher] (local consumers) and to Rust (remote peers).
  * Do not call `FFI.init` here, it would replace the context Rust uses to call [MainService].
+ *
+ * 关键点：
+ *  1. 独立的前台服务（mediaProjection 类型），启停与 MainService 互不关联
+ *  2. 由 CapturePermissionActivity 拿到录屏授权后启动（intent 里带授权结果）
+ *  3. 画面同时送给本地监听者（FrameDispatcher）和 Rust（FFI.onVideoFrameUpdate）
+ *  4. 屏幕尺寸变化（旋转等）时重建 VirtualDisplay，避免只显示 1/4 屏幕
  */
 class ScreenCaptureService : Service() {
     companion object {
@@ -74,10 +80,12 @@ class ScreenCaptureService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // 只响应 ACT_START_SCREEN_CAPTURE；其他启动方式（如被系统重启）直接退出
         if (intent?.action != ACT_START_SCREEN_CAPTURE) {
             stopSelf()
             return START_NOT_STICKY
         }
+        // 必须先 startForeground，再使用 MediaProjection，否则 Android 14+ 会抛 SecurityException
         if (!startForegroundCapture()) {
             stopSelf()
             return START_NOT_STICKY
@@ -183,6 +191,7 @@ class ScreenCaptureService : Service() {
             return false
         }
         val callback = object : MediaProjection.Callback() {
+            // 用户在系统里结束录屏（如点状态栏停止）时，同步关闭本服务
             override fun onStop() {
                 Log.d(logTag, "MediaProjection stopped")
                 stopSelf()
@@ -212,6 +221,7 @@ class ScreenCaptureService : Service() {
         imageReader = reader
         virtualDisplay = display
         _isStart = true
+        // 打开 Rust 的 video 帧通道，之后每帧通过 FFI.onVideoFrameUpdate 推送
         FFI.setFrameRawEnable("video", true)
         MainActivity.rdClipboardManager?.setCaptureStarted(true)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -229,6 +239,7 @@ class ScreenCaptureService : Service() {
         val wasStart = _isStart
         _isStart = false
         if (wasStart) {
+            // 如果旧的 MainService 录屏路径还在用 video 通道，就不能关；否则会把它的画面也断掉
             if (!MainService.isStart) {
                 FFI.setFrameRawEnable("video", false)
                 MainActivity.rdClipboardManager?.setCaptureStarted(false)
@@ -277,6 +288,7 @@ class ScreenCaptureService : Service() {
                     return
                 }
                 if (image.width != SCREEN_INFO.width || image.height != SCREEN_INFO.height) {
+                    // 帧尺寸和当前屏幕信息不一致（刚旋转/缩放）：丢弃这帧并只触发一次重建，防止重复 post
                     if (!resizePending) {
                         resizePending = true
                         Log.d(logTag, "frame ${image.width}x${image.height} != $SCREEN_INFO, resize")
