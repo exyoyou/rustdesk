@@ -2014,6 +2014,15 @@ impl Connection {
         {
             platform_additions.insert("support_view_camera".into(), json!(true));
         }
+        #[cfg(target_os = "android")]
+        {
+            // [fork] 告诉控制端：本机（Android）支持“查看摄像头”，否则客户端会提示“远程端不支持查看摄像头”。
+            // io_loop.rs 的 check_view_camera_support 读取的就是这个字段；
+            // 其它平台已在上面的 windows/linux 分支里设置，这里只补 Android。
+            let mut platform_additions = serde_json::Map::new();
+            platform_additions.insert("support_view_camera".into(), json!(true));
+            pi.platform_additions = serde_json::to_string(&platform_additions).unwrap_or_default();
+        }
 
         #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
         if !platform_additions.is_empty() {
@@ -2221,6 +2230,15 @@ impl Connection {
 
             s.try_add_primary_camera_service();
             s.add_camera_connection(self.inner.clone());
+            // [fork] 查看摄像头的连接默认只订阅视频，不会订阅音频（只有语音通话才会订阅）。
+            // Android 端麦克风由 CameraCaptureService 随摄像头一起采集，这里订阅音频服务，
+            // 让麦克风声音和摄像头画面一起推给控制端。
+            #[cfg(target_os = "android")]
+            s.subscribe(
+                super::audio_service::NAME,
+                self.inner.clone(),
+                self.audio_enabled(),
+            );
         }
     }
 
