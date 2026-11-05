@@ -129,6 +129,12 @@ class MainService : Service() {
                     } else {
                         translate("Share screen")
                     }
+                    // [fork] 查看屏幕的连接：登记并按需开启录屏（未授权的先挂起，授权后再计入）
+                    if (!isFileTransfer && !jsonObject.optBoolean("is_terminal") &&
+                        !jsonObject.optBoolean("is_view_camera")
+                    ) {
+                        CaptureController.onViewerAdded(id, authorized)
+                    }
                     if (authorized) {
                         if (!isFileTransfer && !isStart) {
                             startCapture()
@@ -171,6 +177,14 @@ class MainService : Service() {
             "stop_capture" -> {
                 Log.d(logTag, "from rust:stop_capture")
                 stopCapture()
+            }
+            // [fork] 连接被用户点击同意（arg1 是连接 id）
+            "authorize_connection" -> {
+                arg1.toIntOrNull()?.let { CaptureController.onViewerAuthorized(it) }
+            }
+            // [fork] 连接断开（arg1 是连接 id），减少查看计数，没人查看且配置未开启时关闭录屏
+            "remove_connection" -> {
+                arg1.toIntOrNull()?.let { CaptureController.onViewerRemoved(it) }
             }
             "half_scale" -> {
                 val halfScale = arg1.toBoolean()
@@ -264,6 +278,8 @@ class MainService : Service() {
 
     override fun onDestroy() {
         checkMediaPermission()
+        // [fork] 服务下线时停止常驻配置同步并清空查看者计数
+        CaptureController.onServiceStop()
         stopService(Intent(this, FloatingWindowService::class.java))
         super.onDestroy()
     }
@@ -354,6 +370,8 @@ class MainService : Service() {
             // [fork] 只让设备上线（启动 Rust 服务），不初始化 MediaProjection、不录屏；
             // 返回 START_NOT_STICKY：被杀后不自动重启
             FFI.startService()
+            // [fork] 服务上线后常驻同步配置，并按连接/总开关自动开关录屏
+            CaptureController.onServiceStart(this)
             return START_NOT_STICKY
         }
         if (intent?.action == ACT_INIT_MEDIA_PROJECTION_AND_SERVICE) {

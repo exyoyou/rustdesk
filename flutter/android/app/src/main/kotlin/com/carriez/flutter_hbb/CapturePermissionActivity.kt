@@ -14,6 +14,11 @@ import android.util.Log
  * 手动点“屏幕录制”和开机自启都走这里。
  */
 class CapturePermissionActivity : Activity() {
+    companion object {
+        // 只借前台启动摄像头服务，不申请录屏授权（开机自启用）
+        const val EXTRA_CAMERA_ONLY = "camera_only"
+    }
+
     private val logTag = "CapturePermission"
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -22,6 +27,12 @@ class CapturePermissionActivity : Activity() {
         // BOOT_COMPLETED 直接启动摄像头/麦克风类型的前台服务，所以趁 Activity 在前台时把摄像头服务空转起来，
         // 之后控制端查看摄像头才能在后台打开摄像头。
         CameraHook.prepare(this)
+        if (intent.getBooleanExtra(EXTRA_CAMERA_ONLY, false)) {
+            finish()
+            return
+        }
+        // [fork] 记录授权界面的弹出时间，CaptureController 据此避免重复弹出
+        CaptureController.markRequested()
         val manager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())

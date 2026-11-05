@@ -43,10 +43,11 @@ class BootReceiver : BroadcastReceiver() {
             } else {
                 context.startService(it)
             }
-            // [fork] 开机后拉起透明 Activity 申请录屏授权（授权后由它启动 ScreenCaptureService）；
-            // 它同时是开机时唯一在前台的界面，摄像头服务也借它启动
+            // [fork] 开机后拉起透明 Activity，只用来把摄像头服务借前台启动起来；录屏是否开启交给
+            // CaptureController 按配置/连接决定，配置关闭时开机不弹授权、不录屏
             context.startActivity(Intent(context, CapturePermissionActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                putExtra(CapturePermissionActivity.EXTRA_CAMERA_ONLY, true)
             })
         }
     }
