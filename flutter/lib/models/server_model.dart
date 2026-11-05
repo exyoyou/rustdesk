@@ -6,7 +6,9 @@ import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/main.dart';
 import 'package:flutter_hbb/mobile/pages/settings_page.dart';
 import 'package:flutter_hbb/models/chat_model.dart';
+// [fork] begin
 import 'package:flutter_hbb/models/capture_model.dart';
+// [fork] end
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:get/get.dart';
 import 'package:window_manager/window_manager.dart';
@@ -443,7 +445,7 @@ class ServerModel with ChangeNotifier {
     }
   }
 
-  /// [fork] 只启动服务（设备上线），不启动屏幕录制；录屏由 CapturePanel 单独控制。
+  /// [fork] begin: 只启动服务（设备上线），不启动屏幕录制；录屏由 CapturePanel 单独控制。
   /// Start the service only (device online), without screen capture.
   Future<void> startServiceOnly() async {
     _isStart = true;
@@ -457,14 +459,16 @@ class ServerModel with ChangeNotifier {
       androidUpdatekeepScreenOn();
     }
   }
+  // [fork] end
 
   /// Stop the screen sharing service.
   Future<void> stopService() async {
     _isStart = false;
     closeAll();
     await parent.target?.invokeMethod("stop_service");
-    // [fork] 同步关闭独立的服务通道（ScreenCaptureService 由用户在面板里单独关闭）
+    // [fork] begin: 同步关闭独立的服务通道（ScreenCaptureService 由用户在面板里单独关闭）
     await gCaptureModel.stopService();
+    // [fork] end
     await bind.mainStopService();
     notifyListeners();
     // for androidUpdatekeepScreenOn only

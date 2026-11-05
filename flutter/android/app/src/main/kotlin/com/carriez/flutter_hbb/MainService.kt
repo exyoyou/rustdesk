@@ -105,11 +105,15 @@ class MainService : Service() {
                 }.toString()
             }
             "is_start" -> {
-                // [fork] 录屏改由 ScreenCaptureService 负责，两者任一在运行都算“已开始”
+                // [fork] begin: 录屏改由 ScreenCaptureService 负责，两者任一在运行都算“已开始”
+                // [upstream] isStart.toString()
                 (isStart || ScreenCaptureService.isStart).toString()
+                // [fork] end
             }
-            // [fork] 未识别的 get 请求交给 CameraHook（如 "camera_info" 获取摄像头列表）
+            // [fork] begin: 未识别的 get 请求交给 CameraHook（如 "camera_info" 获取摄像头列表）
+            // [upstream] else -> ""
             else -> CameraHook.get(this, name)
+            // [fork] end
         }
     }
 
@@ -129,12 +133,13 @@ class MainService : Service() {
                     } else {
                         translate("Share screen")
                     }
-                    // [fork] 查看屏幕的连接：登记并按需开启录屏（未授权的先挂起，授权后再计入）
+                    // [fork] begin: 查看屏幕的连接：登记并按需开启录屏（未授权的先挂起，授权后再计入）
                     if (!isFileTransfer && !jsonObject.optBoolean("is_terminal") &&
                         !jsonObject.optBoolean("is_view_camera")
                     ) {
                         CaptureController.onViewerAdded(id, authorized)
                     }
+                    // [fork] end
                     if (authorized) {
                         if (!isFileTransfer && !isStart) {
                             startCapture()
@@ -178,14 +183,15 @@ class MainService : Service() {
                 Log.d(logTag, "from rust:stop_capture")
                 stopCapture()
             }
-            // [fork] 连接被用户点击同意（arg1 是连接 id）
+            // [fork] begin: 连接被用户点击同意（arg1 是连接 id）
             "authorize_connection" -> {
                 arg1.toIntOrNull()?.let { CaptureController.onViewerAuthorized(it) }
             }
-            // [fork] 连接断开（arg1 是连接 id），减少查看计数，没人查看且配置未开启时关闭录屏
+            // 连接断开（arg1 是连接 id），减少查看计数，没人查看且配置未开启时关闭录屏
             "remove_connection" -> {
                 arg1.toIntOrNull()?.let { CaptureController.onViewerRemoved(it) }
             }
+            // [fork] end
             "half_scale" -> {
                 val halfScale = arg1.toBoolean()
                 if (isHalfScale != halfScale) {
@@ -195,8 +201,9 @@ class MainService : Service() {
                 
             }
             else -> {
-                // [fork] 未识别的 set 请求交给 CameraHook（"start_camera" / "stop_camera"）
+                // [fork] begin: 未识别的 set 请求交给 CameraHook（"start_camera" / "stop_camera"）
                 CameraHook.set(this, name, arg1)
+                // [fork] end
             }
         }
     }
@@ -278,8 +285,9 @@ class MainService : Service() {
 
     override fun onDestroy() {
         checkMediaPermission()
-        // [fork] 服务下线时停止常驻配置同步并清空查看者计数
+        // [fork] begin: 服务下线时停止常驻配置同步并清空查看者计数
         CaptureController.onServiceStop()
+        // [fork] end
         stopService(Intent(this, FloatingWindowService::class.java))
         super.onDestroy()
     }
@@ -367,12 +375,13 @@ class MainService : Service() {
         Log.d("whichService", "this service: ${Thread.currentThread()}")
         super.onStartCommand(intent, flags, startId)
         if (intent?.action == ACT_START_SERVICE_ONLY) {
-            // [fork] 只让设备上线（启动 Rust 服务），不初始化 MediaProjection、不录屏；
+            // [fork] begin: 只让设备上线（启动 Rust 服务），不初始化 MediaProjection、不录屏；
             // 返回 START_NOT_STICKY：被杀后不自动重启
             FFI.startService()
-            // [fork] 服务上线后常驻同步配置，并按连接/总开关自动开关录屏
+            // 服务上线后常驻同步配置，并按连接/总开关自动开关录屏
             CaptureController.onServiceStart(this)
             return START_NOT_STICKY
+            // [fork] end
         }
         if (intent?.action == ACT_INIT_MEDIA_PROJECTION_AND_SERVICE) {
             if (intent.getBooleanExtra(EXT_INIT_FROM_BOOT, false)) {
@@ -660,8 +669,10 @@ class MainService : Service() {
         Log.d(logTag, "Stop Capture")
         captureRestartPending = false
         captureRestartInVoiceCall = false
-        // [fork] 如果 ScreenCaptureService 还在录屏，不能关闭 video 帧通道，否则录屏会断流
+        // [fork] begin: 如果 ScreenCaptureService 还在录屏，不能关闭 video 帧通道，否则录屏会断流
+        // [upstream] FFI.setFrameRawEnable("video",false)
         if (!ScreenCaptureService.isStart) FFI.setFrameRawEnable("video",false)
+        // [fork] end
         _isStart = false
         MainActivity.rdClipboardManager?.setCaptureStarted(_isStart)
         // release video

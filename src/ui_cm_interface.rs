@@ -368,7 +368,7 @@ pub fn authorize(id: i32) {
     if let Some(client) = CLIENTS.write().unwrap().get_mut(&id) {
         client.authorized = true;
         allow_err!(client.tx.send(Data::Authorize));
-        // [fork] Android：通知 Kotlin 该连接已被用户同意（点击接受），CaptureController 据此把它计入查看者并按需启动录屏
+        // [fork] begin: Android：通知 Kotlin 该连接已被用户同意（点击接受），CaptureController 据此把它计入查看者并按需启动录屏
         #[cfg(target_os = "android")]
         scrap::android::call_main_service_set_by_name(
             "authorize_connection",
@@ -376,6 +376,7 @@ pub fn authorize(id: i32) {
             None,
         )
         .ok();
+        // [fork] end
     };
 }
 

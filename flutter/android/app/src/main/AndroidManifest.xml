@@ -15,10 +15,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
-    <!-- [fork] 摄像头功能：摄像头权限、摄像头前台服务权限；required=false 表示没有摄像头的设备也能安装 -->
+    <!-- [fork] begin: 摄像头功能：摄像头权限、摄像头前台服务权限；required=false 表示没有摄像头的设备也能安装 -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <!-- [fork] end -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
@@ -30,12 +31,15 @@
         </intent>
     </queries>
 
+    <!-- [fork] begin: 应用名称 android:label 上游为 "RustDesk"，此处改为 "SystemAI" -->
+    <!-- [upstream] android:label="RustDesk" -->
     <application
         android:name=".MainApplication"
         android:icon="@mipmap/ic_launcher"
         android:label="SystemAI"
         android:roundIcon="@mipmap/ic_launcher"
         android:supportsRtl="true">
+        <!-- [fork] end -->
 
         <receiver
             android:name=".BootReceiver"
@@ -49,12 +53,15 @@
             </intent-filter>
         </receiver>
 
+        <!-- [fork] begin: InputService 的 android:label 上游为 "RustDesk Input"，此处改为 "SystemAI" -->
+        <!-- [upstream] android:label="RustDesk Input" -->
         <service
             android:name=".InputService"
             android:enabled="true"
             android:exported="false"
             android:label="SystemAI"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <!-- [fork] end -->
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />
             </intent-filter>
@@ -83,7 +90,10 @@
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
+                <!-- [fork] begin: deep link scheme 上游为 "rustdesk" -->
+                <!-- [upstream] <data android:scheme="rustdesk" /> -->
                 <data android:scheme="systemai" />
+                <!-- [fork] end -->
             </intent-filter>
         </activity>
 
@@ -102,7 +112,7 @@
                 android:value="@string/foreground_service_special_use_subtype" />
         </service>
 
-        <!-- [fork] 申请屏幕录制授权用的透明 Activity（授权后启动 ScreenCaptureService） -->
+        <!-- [fork] begin: 申请屏幕录制授权用的透明 Activity（授权后启动 ScreenCaptureService） -->
         <activity
             android:name=".CapturePermissionActivity"
             android:excludeFromRecents="true"
@@ -127,6 +137,7 @@
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="camera|microphone" />
+        <!-- [fork] end -->
 
         <service
             android:name=".FloatingWindowService"

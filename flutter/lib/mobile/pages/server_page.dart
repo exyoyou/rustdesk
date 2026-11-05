@@ -13,7 +13,9 @@ import '../../common/widgets/dialog.dart';
 import '../../consts.dart';
 import '../../models/platform_model.dart';
 import '../../models/server_model.dart';
+// [fork] begin
 import '../widgets/capture_panel.dart';
+// [fork] end
 import 'home_page.dart';
 
 class ServerPage extends StatefulWidget implements PageShape {
@@ -215,8 +217,9 @@ class _ServerPageState extends State<ServerPage> {
                             ? ServerInfo()
                             : ServiceNotRunningNotification(),
                         const ConnectionManager(),
-                        // [fork] 服务/录屏/摄像头 的独立开关面板，仅 Android 显示
+                        // [fork] begin: 服务/录屏/摄像头 的独立开关面板，仅 Android 显示
                         if (isAndroid) const CapturePanel(),
+                        // [fork] end
                         const PermissionChecker(),
                         SizedBox.fromSize(size: const Size(0, 15.0)),
                       ],

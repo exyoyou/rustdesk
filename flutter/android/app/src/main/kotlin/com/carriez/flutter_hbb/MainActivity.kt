@@ -89,8 +89,9 @@ class MainActivity : FlutterActivity() {
             channelTag
         )
         initFlutterChannel(flutterMethodChannel!!)
-        // [fork] 注册“服务/录屏”独立控制的 Flutter 通道（mChannelCapture），逻辑都在 CaptureChannel.kt
+        // [fork] begin: 注册“服务/录屏”独立控制的 Flutter 通道（mChannelCapture），逻辑都在 CaptureChannel.kt
         CaptureChannel.register(this, flutterEngine.dartExecutor.binaryMessenger)
+        // [fork] end
         thread {
             try {
                 setCodecInfo()
