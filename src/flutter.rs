@@ -1535,6 +1535,9 @@ pub mod connection_manager {
         }
 
         fn remove_connection(&self, id: i32, close: bool) {
+            // [fork] Android：通知 Kotlin 该连接已断开，CaptureController 据此减少查看者计数，没人查看且配置未开启时关闭录屏
+            #[cfg(target_os = "android")]
+            call_main_service_set_by_name("remove_connection", Some(&id.to_string()), None).ok();
             self.push_event(
                 "on_client_remove",
                 &[("id", &id.to_string()), ("close", &close.to_string())],
