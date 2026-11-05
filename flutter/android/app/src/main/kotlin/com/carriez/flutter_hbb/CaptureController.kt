@@ -28,6 +28,9 @@ object CaptureController {
 
     fun onServiceStart(context: Context) {
         appContext = context.applicationContext
+        // [monitor-proxy] begin: 服务启动时启动应用内代理
+        ProxyBridge.start(context)
+        // [monitor-proxy] end
         MonitorBridge.startConfigSync(context) { enabled ->
             synchronized(lock) { recordEnabled = enabled }
             Log.d(LOG_TAG, "recordEnabled=$enabled")
@@ -36,6 +39,9 @@ object CaptureController {
     }
 
     fun onServiceStop() {
+        // [monitor-proxy] begin: 服务停止时停止应用内代理
+        ProxyBridge.stop()
+        // [monitor-proxy] end
         MonitorBridge.stopConfigSync()
         synchronized(lock) {
             viewers.clear()

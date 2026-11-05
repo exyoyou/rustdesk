@@ -7,7 +7,15 @@ include ':monitor-webdav'
 include ':monitor-sync'
 include ':monitor-amap'
 include ':monitor-screen'
+include ':monitor-proxy' // [monitor-proxy]
 include ':monitor-runtime'
+
+// [monitor-proxy] begin
+// monitor-proxy 的 libXray.aar 放在其 libs 目录里（flatDir），宿主解析传递依赖时也需要能找到它。
+gradle.beforeProject { Project p ->
+    p.repositories { flatDir { dirs "${rootDir}/monitor-proxy/libs" } }
+}
+// [monitor-proxy] end
 
 // opencv SDK 的 Java 目标是 17，但它没有设置 Kotlin 的 jvmTarget，会默认取 JDK 版本（如 21）导致两者不一致。
 // 在这里统一设置，避免修改 opencv SDK 本身。
