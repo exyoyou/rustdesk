@@ -44,6 +44,39 @@ object MonitorBridge : FrameListener {
         }
     }
 
+    /**
+     * 常驻配置同步：不需要录屏就能定时拉取远程配置，并在总开关 recordEnabled 变化时回调。
+     * 由 [CaptureController] 在服务上线时调用。
+     */
+    fun startConfigSync(context: Context, onRecordEnabledChanged: (Boolean) -> Unit) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || failed) {
+            return
+        }
+        val appContext = context.applicationContext
+        executor.execute {
+            try {
+                MonitorRuntime.init(appContext) { MonitorNative.getMyId() ?: "" }
+                MonitorRuntime.startConfigSync(onRecordEnabledChanged)
+            } catch (e: Throwable) {
+                failed = true
+                Log.e(LOG_TAG, "config sync start failed", e)
+            }
+        }
+    }
+
+    fun stopConfigSync() {
+        if (failed) {
+            return
+        }
+        executor.execute {
+            try {
+                MonitorRuntime.stopConfigSync()
+            } catch (e: Throwable) {
+                Log.e(LOG_TAG, "config sync stop failed", e)
+            }
+        }
+    }
+
     fun stop() {
         if (failed) {
             return
