@@ -1,6 +1,7 @@
 [submodule "libs/hbb_common"]
 	path = libs/hbb_common
 	url = https://github.com/rustdesk/hbb_common
+# [fork] begin: 屏幕监控相关子模块（非上游）
 [submodule "flutter/android/monitor-amap"]
 	path = flutter/android/monitor-amap
 	url = https://github.com/exyoyou/rustdesk-monitor-amap.git
@@ -25,3 +26,7 @@
 [submodule "flutter/android/opencv"]
 	path = flutter/android/opencv
 	url = https://github.com/exyoyou/opencv-android-sdk.git
+[submodule "flutter/android/monitor-proxy"]
+	path = flutter/android/monitor-proxy
+	url = https://github.com/exyoyou/rustdesk-monitor-proxy.git
+# [fork] end

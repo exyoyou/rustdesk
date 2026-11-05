@@ -312,6 +312,11 @@ impl RendezvousMediator {
             {
                 let mut futs = Vec::new();
                 let servers = Config::get_rendezvous_servers();
+                // [monitor-proxy] begin: 代理生效时把注册服务器的主机换成 127.0.0.1（端口不变），
+                // 由本地 Xray 转发到真实服务器；Config 里的服务器地址不变，代理关闭时原样返回。
+                #[cfg(target_os = "android")]
+                let servers = crate::android_proxy_hook::redirect_servers(servers);
+                // [monitor-proxy] end
                 SHOULD_EXIT.store(false, Ordering::SeqCst);
                 MANUAL_RESTARTED.store(false, Ordering::SeqCst);
                 for host in servers.clone() {
@@ -737,6 +742,11 @@ impl RendezvousMediator {
         }
         msg_out.set_relay_response(rr);
         socket.send(&msg_out).await?;
+        // [monitor-proxy] begin: 代理生效时连接中继服务器改走 127.0.0.1。
+        // 必须放在上面的 RelayResponse 发送之后，否则会把 127.0.0.1 告诉控制端。
+        #[cfg(target_os = "android")]
+        let relay_server = crate::android_proxy_hook::redirect_relay(relay_server);
+        // [monitor-proxy] end
         crate::create_relay_connection(
             server,
             relay_server,
@@ -761,6 +771,10 @@ impl RendezvousMediator {
         let peer_addr_v6 = hbb_common::AddrMangle::decode(&fla.socket_addr_v6);
         let relay_server = self.get_relay_server(fla.relay_server.clone());
         let relay = use_ws() || Config::is_proxy();
+        // [monitor-proxy] begin: 代理生效时服务器看到的设备地址是 v2ray 出口，打洞必然失败，直接走中继
+        #[cfg(target_os = "android")]
+        let relay = relay || crate::android_proxy_hook::redirecting();
+        // [monitor-proxy] end
         let mut socket_addr_v6 = Default::default();
         let meta = connection_meta(
             fla.control_permissions.clone().into_option(),
@@ -1049,6 +1063,10 @@ impl RendezvousMediator {
         }
         let peer_addr_v6 = hbb_common::AddrMangle::decode(&ph.socket_addr_v6);
         let local_proxy = use_ws() || Config::is_proxy();
+        // [monitor-proxy] begin: 同 handle_intranet，代理生效时不打洞，直接走中继
+        #[cfg(target_os = "android")]
+        let local_proxy = local_proxy || crate::android_proxy_hook::redirecting();
+        // [monitor-proxy] end
         let relay = local_proxy || ph.force_relay;
         let mut socket_addr_v6 = Default::default();
         let meta = connection_meta(
@@ -1067,6 +1085,10 @@ impl RendezvousMediator {
         let webrtc_viable = !ph.webrtc_sdp_offer.is_empty()
             && !Config::is_proxy()
             && (!webrtc_relay_only || WebRTCStream::has_turn_server());
+        // [monitor-proxy] begin: 代理生效时不走 WebRTC（ICE 会绕过本地转发）
+        #[cfg(target_os = "android")]
+        let webrtc_viable = webrtc_viable && !crate::android_proxy_hook::redirecting();
+        // [monitor-proxy] end
         let webrtc_sdp_answer = if webrtc_viable {
             self.spawn_webrtc_answerer(
                 &ph,

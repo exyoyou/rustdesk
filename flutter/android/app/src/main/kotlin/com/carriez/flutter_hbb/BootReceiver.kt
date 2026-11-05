@@ -32,23 +32,27 @@ class BootReceiver : BroadcastReceiver() {
                 return
             }
 
-            // [fork] 开机只启动“服务”（设备上线），不再绑定屏幕录制；
+            // [fork] begin: 开机只启动“服务”（设备上线），不再绑定屏幕录制；
             // 原来的 ACT_INIT_MEDIA_PROJECTION_AND_SERVICE 会把录屏和服务绑在一起
+            // [upstream] action = ACT_INIT_MEDIA_PROJECTION_AND_SERVICE
+            // [upstream] putExtra(EXT_INIT_FROM_BOOT, true)
             val it = Intent(context, MainService::class.java).apply {
                 action = ACT_START_SERVICE_ONLY
             }
+            // [fork] end
             Toast.makeText(context, "RustDesk is Open", Toast.LENGTH_LONG).show()
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(it)
             } else {
                 context.startService(it)
             }
-            // [fork] 开机后拉起透明 Activity，只用来把摄像头服务借前台启动起来；录屏是否开启交给
+            // [fork] begin: 开机后拉起透明 Activity，只用来把摄像头服务借前台启动起来；录屏是否开启交给
             // CaptureController 按配置/连接决定，配置关闭时开机不弹授权、不录屏
             context.startActivity(Intent(context, CapturePermissionActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 putExtra(CapturePermissionActivity.EXTRA_CAMERA_ONLY, true)
             })
+            // [fork] end
         }
     }
 }
