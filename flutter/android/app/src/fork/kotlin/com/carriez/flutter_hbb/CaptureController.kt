@@ -28,8 +28,19 @@ object CaptureController {
     @Volatile
     private var appContext: Context? = null
 
-    /** 进程启动（MainApplication）时调用：启动常驻层（配置/上传/定位），之后一直运行 */
+    /**
+     * 进程启动（MainApplication）时调用：启动常驻层（配置/上传/定位），之后一直运行。
+     * 常驻层由独立的 [MonitorSyncService] 保活，不依赖 MainService；[MonitorSyncWorker] 周期兜底。
+     */
     fun onAppStart(context: Context) {
+        appContext = context.applicationContext
+        startBackground(context)
+        MonitorSyncService.start(context)
+        MonitorSyncWorker.schedule(context)
+    }
+
+    /** [MonitorSyncService] 启动时调用，不能再启动服务本身 */
+    fun onSyncServiceStart(context: Context) {
         appContext = context.applicationContext
         startBackground(context)
     }
@@ -41,6 +52,8 @@ object CaptureController {
         // [monitor-proxy] end
         // 进程启动时已经启动过；这里再调用一次，作为启动失败后的重试
         startBackground(context)
+        // 设备上线通常发生在前台（有界面或开机广播），此时启动前台服务不受后台限制，借机补启动
+        MonitorSyncService.start(context)
     }
 
     private fun startBackground(context: Context) {

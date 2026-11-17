@@ -145,5 +145,7 @@ dependencies {
     implementation "rustls:rustls-platform-verifier:0.1.1"
     // [fork] begin: 屏幕监控入口，其余 monitor-* 模块和 opencv 由它传递引入
     implementation project(':monitor-runtime')
+    // 配置拉取的周期兜底任务（MonitorSyncWorker）
+    implementation 'androidx.work:work-runtime-ktx:2.9.1'
     // [fork] end
 }
