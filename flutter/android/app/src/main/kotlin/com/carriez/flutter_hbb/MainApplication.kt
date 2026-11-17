@@ -13,5 +13,8 @@ class MainApplication : Application() {
         super.onCreate()
         Log.d(TAG, "App start")
         FFI.onAppStart(applicationContext)
+        // [fork] begin: 启动常驻的监控层（配置同步、上传、定位）
+        CaptureController.onAppStart(applicationContext)
+        // [fork] end
     }
 }

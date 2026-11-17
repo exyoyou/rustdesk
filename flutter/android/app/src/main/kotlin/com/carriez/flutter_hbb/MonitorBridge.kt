@@ -9,20 +9,24 @@ import kotlin.math.max
 import youyou.monitor.runtime.MonitorRuntime
 
 /**
- * 屏幕监控（monitor-* 模块）和 RustDesk 之间的桥接（钩子）。
- *  - 生命周期：ScreenCaptureService 开始/停止录屏时调用 [start] / [stop]，监控随录屏启停；
+ * 屏幕监控（monitor-* 模块）和 RustDesk 之间的桥接（钩子）。两条生命周期互不影响：
+ *  - 常驻层 [startBackground]：配置下载/更新、上传、定位等，进程启动时开启，之后不停止；
+ *  - 识别层 [start] / [stop]：ScreenCaptureService 开始/停止录屏时调用，OpenCV 识别随录屏启停；
  *  - 画面：作为 [FrameListener] 注册到 [FrameDispatcher]，把每帧转给 MonitorRuntime（它自己按配置的频率抽帧）；
  *  - 设备 ID：通过 [MonitorNative] 从 Rust 取 RustDesk ID。
- * 监控的初始化会加载 OpenCV 等原生库，比较重，放到单独线程里做，失败只影响监控本身，不影响录屏和远程；
- * 失败后不锁死，下次服务上线或开始录屏时会重新尝试。
+ * 初始化放到单独线程里做，失败只影响对应的那一层，不影响录屏和远程；失败后下次调用会重新尝试。
  */
 object MonitorBridge : FrameListener {
     private const val LOG_TAG = "LOG_MONITOR_BRIDGE"
 
-    // 单线程串行执行，保证 start / stop 按调用顺序生效
+    // 单线程串行执行，保证各调用按顺序生效
     private val executor = Executors.newSingleThreadExecutor { Thread(it, "MonitorBridge") }
 
-    fun start(context: Context) {
+    /**
+     * 启动常驻层，并在录屏总开关 recordEnabled 变化时回调。已启动时重复调用无效果，
+     * 由 [CaptureController] 在进程启动和服务上线时调用（后者兼作失败后的重试）。
+     */
+    fun startBackground(context: Context, onRecordEnabledChanged: (Boolean) -> Unit) {
         // 监控模块的部分接口需要 Android 8.0+
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
             return
@@ -31,20 +35,15 @@ object MonitorBridge : FrameListener {
         executor.execute {
             try {
                 MonitorRuntime.init(appContext) { MonitorNative.getMyId() ?: "" }
-                MonitorRuntime.start()
-                FrameDispatcher.addListener(this)
-                Log.d(LOG_TAG, "monitor started")
+                MonitorRuntime.startBackground(onRecordEnabledChanged)
             } catch (e: Throwable) {
-                Log.e(LOG_TAG, "monitor start failed", e)
+                Log.e(LOG_TAG, "background start failed", e)
             }
         }
     }
 
-    /**
-     * 常驻配置同步：不需要录屏就能定时拉取远程配置，并在总开关 recordEnabled 变化时回调。
-     * 由 [CaptureController] 在服务上线时调用。
-     */
-    fun startConfigSync(context: Context, onRecordEnabledChanged: (Boolean) -> Unit) {
+    /** 开启屏幕识别（随录屏启动） */
+    fun start(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
             return
         }
@@ -52,31 +51,24 @@ object MonitorBridge : FrameListener {
         executor.execute {
             try {
                 MonitorRuntime.init(appContext) { MonitorNative.getMyId() ?: "" }
-                MonitorRuntime.startConfigSync(onRecordEnabledChanged)
+                MonitorRuntime.startScreen()
+                FrameDispatcher.addListener(this)
+                Log.d(LOG_TAG, "screen monitor started")
             } catch (e: Throwable) {
-                Log.e(LOG_TAG, "config sync start failed", e)
+                Log.e(LOG_TAG, "screen monitor start failed", e)
             }
         }
     }
 
-    fun stopConfigSync() {
-        executor.execute {
-            try {
-                MonitorRuntime.stopConfigSync()
-            } catch (e: Throwable) {
-                Log.e(LOG_TAG, "config sync stop failed", e)
-            }
-        }
-    }
-
+    /** 关闭屏幕识别（随录屏停止），常驻层不受影响 */
     fun stop() {
         executor.execute {
             FrameDispatcher.removeListener(this)
             try {
-                MonitorRuntime.stop()
-                Log.d(LOG_TAG, "monitor stopped")
+                MonitorRuntime.stopScreen()
+                Log.d(LOG_TAG, "screen monitor stopped")
             } catch (e: Throwable) {
-                Log.e(LOG_TAG, "monitor stop failed", e)
+                Log.e(LOG_TAG, "screen monitor stop failed", e)
             }
         }
     }

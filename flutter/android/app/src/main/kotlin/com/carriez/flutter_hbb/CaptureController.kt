@@ -11,7 +11,8 @@ import android.util.Log
  *  - 有远程连接在查看屏幕（[onViewerAdded] / [onViewerRemoved] 按连接计数）；
  *  - 远程配置里的总开关 recordEnabled 为 true（屏幕识别/自动截屏）。
  * 开启时如果还没有授权，会弹出授权界面；用户需要在手机上确认一次。
- * 触发时机：服务上线/下线、连接增减、配置开关变化。
+ * 触发时机：进程启动、服务上线/下线、连接增减、配置开关变化。
+ * recordEnabled 来自常驻层，进程在就一直生效，不随服务下线清除。
  */
 object CaptureController {
     private const val LOG_TAG = "LOG_CAPTURE_CTRL"
@@ -26,12 +27,23 @@ object CaptureController {
     private var lastRequestAt = 0L
     private var appContext: Context? = null
 
+    /** 进程启动（MainApplication）时调用：启动常驻层（配置/上传/定位），之后一直运行 */
+    fun onAppStart(context: Context) {
+        appContext = context.applicationContext
+        startBackground(context)
+    }
+
     fun onServiceStart(context: Context) {
         appContext = context.applicationContext
         // [monitor-proxy] begin: 服务启动时启动应用内代理
         ProxyBridge.start(context)
         // [monitor-proxy] end
-        MonitorBridge.startConfigSync(context) { enabled ->
+        // 进程启动时已经启动过；这里再调用一次，作为启动失败后的重试
+        startBackground(context)
+    }
+
+    private fun startBackground(context: Context) {
+        MonitorBridge.startBackground(context) { enabled ->
             synchronized(lock) { recordEnabled = enabled }
             Log.d(LOG_TAG, "recordEnabled=$enabled")
             evaluate()
@@ -42,11 +54,9 @@ object CaptureController {
         // [monitor-proxy] begin: 服务停止时停止应用内代理
         ProxyBridge.stop()
         // [monitor-proxy] end
-        MonitorBridge.stopConfigSync()
         synchronized(lock) {
             viewers.clear()
             pending.clear()
-            recordEnabled = false
         }
     }
 

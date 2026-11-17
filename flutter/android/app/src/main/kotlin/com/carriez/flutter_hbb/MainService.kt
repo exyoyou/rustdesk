@@ -285,7 +285,7 @@ class MainService : Service() {
 
     override fun onDestroy() {
         checkMediaPermission()
-        // [fork] begin: 服务下线时停止常驻配置同步并清空查看者计数
+        // [fork] begin: 服务下线时停止应用内代理并清空查看者计数（常驻的配置同步/上传不停）
         CaptureController.onServiceStop()
         // [fork] end
         stopService(Intent(this, FloatingWindowService::class.java))
