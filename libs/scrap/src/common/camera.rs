@@ -161,10 +161,10 @@ impl Cameras {
 #[cfg(not(any(target_os = "windows", target_os = "linux")))]
 impl Cameras {
     pub fn all_info() -> ResultType<Vec<DisplayInfo>> {
-        // [fork] begin: Android：摄像头由 Kotlin 层(Camera2)提供，转到 android/camera.rs；
+        // [fork] begin: Android：摄像头由 Kotlin 层(Camera2)提供，转到 android/fork/camera.rs；
         // 其它不支持的平台保持上游原行为（返回空列表）。
         #[cfg(target_os = "android")]
-        return crate::android::camera::all_info();
+        return crate::android::fork::camera::all_info();
         #[cfg(not(target_os = "android"))]
         return Ok(Vec::new());
         // [fork] end
@@ -174,7 +174,7 @@ impl Cameras {
         // [fork] begin: Android：查询 Kotlin 层是否存在该下标的摄像头
         // [upstream] false
         #[cfg(target_os = "android")]
-        return crate::android::camera::exists(_index);
+        return crate::android::fork::camera::exists(_index);
         #[cfg(not(target_os = "android"))]
         return false;
         // [fork] end
@@ -188,7 +188,7 @@ impl Cameras {
         // [fork] begin: Android：返回（并刷新）摄像头列表，编码器尺寸以此为准
         // [upstream] vec![]
         #[cfg(target_os = "android")]
-        return crate::android::camera::get_sync_cameras();
+        return crate::android::fork::camera::get_sync_cameras();
         #[cfg(not(target_os = "android"))]
         return vec![];
         // [fork] end
@@ -197,7 +197,7 @@ impl Cameras {
     pub fn get_capturer(_current: usize) -> ResultType<Box<dyn TraitCapturer>> {
         // [fork] begin: Android：创建摄像头采集器（会通知 Kotlin 层打开摄像头，采集器销毁时关闭）
         #[cfg(target_os = "android")]
-        return crate::android::camera::get_capturer(_current);
+        return crate::android::fork::camera::get_capturer(_current);
         #[cfg(not(target_os = "android"))]
         bail!(CAMERA_NOT_SUPPORTED);
         // [fork] end

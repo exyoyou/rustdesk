@@ -3,7 +3,7 @@ package com.carriez.flutter_hbb
 import androidx.annotation.Keep
 
 /**
- * JNI 入口：Rust（src/android_proxy_hook.rs）实现，给应用内代理模块（monitor-proxy）读写 RustDesk 的代理和在线状态。
+ * JNI 入口：Rust（src/fork/android_proxy.rs）实现，给应用内代理模块（monitor-proxy）读写 RustDesk 的代理和在线状态。
  * 独立成文件，避免修改上游的 FFI.kt。
  */
 @Keep

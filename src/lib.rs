@@ -67,10 +67,9 @@ mod ui_interface;
 mod ui_session_interface;
 
 mod hbbs_http;
-// [monitor-proxy] begin: Android 应用内代理的 JNI 钩子模块（非上游代码）
-#[cfg(target_os = "android")]
-mod android_proxy_hook;
-// [monitor-proxy] end
+// [fork] begin: 本 fork 新增的 Rust 模块（应用内代理、监控等），代码都在 src/fork/
+mod fork;
+// [fork] end
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 pub mod clipboard_file;

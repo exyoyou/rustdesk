@@ -4,7 +4,7 @@ import androidx.annotation.Keep
 import java.nio.ByteBuffer
 
 /**
- * JNI 入口：Rust（libs/scrap/src/android/camera.rs）实现 onYuv，Kotlin 每帧调用把摄像头画面传过去。
+ * JNI 入口：Rust（libs/scrap/src/android/fork/camera.rs）实现 onYuv，Kotlin 每帧调用把摄像头画面传过去。
  * 独立于屏幕录制的 FFI.kt，避免修改上游文件。
  */
 @Keep

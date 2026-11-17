@@ -1,9 +1,6 @@
-// [fork] begin: Android 摄像头采集（独立模块，减少与上游的合并冲突）
-pub mod camera;
+// [fork] begin: 本 fork 新增的 Android 模块（摄像头采集），代码都在 android/fork/
+pub mod fork;
 // [fork] end
 pub mod ffi;
-// [fork] begin: 屏幕监控需要的 RustDesk 数据（设备 ID）
-pub mod monitor;
-// [fork] end
 
 pub use ffi::*;

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../common.dart';
-import '../../models/capture_model.dart';
+import '../models/capture_model.dart';
 
 /// Independent switches for the device-online service and the screen capture.
 class CapturePanel extends StatefulWidget {

@@ -14,7 +14,7 @@ import '../../consts.dart';
 import '../../models/platform_model.dart';
 import '../../models/server_model.dart';
 // [fork] begin
-import '../widgets/capture_panel.dart';
+import '../../fork/widgets/capture_panel.dart';
 // [fork] end
 import 'home_page.dart';
 

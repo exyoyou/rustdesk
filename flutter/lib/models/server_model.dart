@@ -7,7 +7,7 @@ import 'package:flutter_hbb/main.dart';
 import 'package:flutter_hbb/mobile/pages/settings_page.dart';
 import 'package:flutter_hbb/models/chat_model.dart';
 // [fork] begin
-import 'package:flutter_hbb/models/capture_model.dart';
+import 'package:flutter_hbb/fork/models/capture_model.dart';
 // [fork] end
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:get/get.dart';

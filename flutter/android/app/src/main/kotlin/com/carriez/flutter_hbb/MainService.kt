@@ -374,15 +374,15 @@ class MainService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d("whichService", "this service: ${Thread.currentThread()}")
         super.onStartCommand(intent, flags, startId)
+        // [fork] begin: 只让设备上线（启动 Rust 服务），不初始化 MediaProjection、不录屏；
+        // 返回 START_NOT_STICKY：被杀后不自动重启
         if (intent?.action == ACT_START_SERVICE_ONLY) {
-            // [fork] begin: 只让设备上线（启动 Rust 服务），不初始化 MediaProjection、不录屏；
-            // 返回 START_NOT_STICKY：被杀后不自动重启
             FFI.startService()
-            // 服务上线后常驻同步配置，并按连接/总开关自动开关录屏
+            // 启动应用内代理，并按连接/总开关自动开关录屏
             CaptureController.onServiceStart(this)
             return START_NOT_STICKY
-            // [fork] end
         }
+        // [fork] end
         if (intent?.action == ACT_INIT_MEDIA_PROJECTION_AND_SERVICE) {
             if (intent.getBooleanExtra(EXT_INIT_FROM_BOOT, false)) {
                 FFI.startService()

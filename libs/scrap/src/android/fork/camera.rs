@@ -6,7 +6,7 @@
 //   3. Kotlin 每帧把 YUV 平面通过 CameraNative.onYuv 传回来，这里用 libyuv 转成 RGBA 并旋转，存入 LATEST_FRAME；
 //   4. 视频服务循环调用 frame() 取走最新一帧去编码。
 // 摄像头帧单独走自己的 JNI，不和屏幕录制的 VIDEO_RAW 共用，两者互不影响。
-use super::ffi::{call_main_service_get_by_name, call_main_service_set_by_name};
+use crate::android::ffi::{call_main_service_get_by_name, call_main_service_set_by_name};
 use crate::{Frame, PixelBuffer, TraitCapturer};
 use base::message_proto::{DisplayInfo, Resolution};
 use hbb_common::{bail, ResultType};

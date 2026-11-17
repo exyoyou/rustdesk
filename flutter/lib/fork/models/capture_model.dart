@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../common.dart';
+import '../../common.dart';
 
 /// Android only. Controls the device-online service and the screen capture
 /// independently through the `mChannelCapture` channel.

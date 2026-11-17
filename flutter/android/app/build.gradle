@@ -86,6 +86,9 @@ android {
     compileSdkVersion 36
     sourceSets {
         main.java.srcDirs += 'src/main/kotlin'
+        // [fork] begin: 本 fork 新增的 Kotlin 代码（包名不变），和上游文件分开放
+        main.kotlin.srcDirs += 'src/fork/kotlin'
+        // [fork] end
 
         main.proto.srcDirs += '../../../libs/base/protos'
         main.proto.includes += "message.proto"
