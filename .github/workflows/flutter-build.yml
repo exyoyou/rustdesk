@@ -56,7 +56,9 @@ env:
   UPLOAD_ARTIFACT: "${{ inputs.upload-artifact }}"
   PUBLISH_UPDATE_METADATA: "${{ inputs.publish-update-metadata }}"
   SIGN_BASE_URL: "${{ secrets.SIGN_BASE_URL }}-2"
-
+  # fork: monitor webdav password
+  MONITOR_WEBDAV_PASSWORD: "${{ secrets.MONITOR_WEBDAV_PASSWORD }}"
+  # fork: monitor webdav password end
 jobs:
   validate-update-metadata-keys:
     runs-on: ubuntu-22.04
