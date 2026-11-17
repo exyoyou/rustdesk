@@ -31,6 +31,7 @@ git grep -n "\[upstream\]"                # 改动过的上游原行
 | 文件 | 行 | 内容 |
 |---|---|---|
 | `.gitmodules` | 4 | monitor-* / opencv 子模块 |
+| `.gitignore` | 末尾 | 忽略 `flutter/android/build/` |
 | `flutter/android/settings.gradle` | 27 | `apply from: "monitor_modules.gradle"` |
 | `flutter/android/gradle.properties` | 1 | 加大 Gradle 堆内存（改了上游原行） |
 | `flutter/android/app/build.gradle` | 89 | 加入 `src/fork/kotlin` 源码目录 |

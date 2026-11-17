@@ -60,3 +60,6 @@ flutter/web/
 /third_party/libdrmtap/
 # Local git worktrees
 .worktrees/
+# [fork] begin: Android Gradle 根项目的构建产物
+flutter/android/build/
+# [fork] end
