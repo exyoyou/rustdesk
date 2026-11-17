@@ -25,6 +25,7 @@ object CaptureController {
     private val pending = HashSet<Int>()
     private var recordEnabled = false
     private var lastRequestAt = 0L
+    @Volatile
     private var appContext: Context? = null
 
     /** 进程启动（MainApplication）时调用：启动常驻层（配置/上传/定位），之后一直运行 */

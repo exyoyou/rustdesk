@@ -305,10 +305,11 @@ class ScreenCaptureService : Service() {
                 }
                 val plane = image.planes[0]
                 val buffer = plane.buffer
-                buffer.rewind()
-                FrameDispatcher.dispatch(buffer, image.width, image.height, plane.rowStride)
+                // 先送给远程端，本地识别（可能要复制整屏数据）放在后面，不拖慢远程画面
                 buffer.rewind()
                 FFI.onVideoFrameUpdate(buffer)
+                buffer.rewind()
+                FrameDispatcher.dispatch(buffer, image.width, image.height, plane.rowStride)
                 logFrameRate(image.width, image.height)
             }
         } catch (ignored: Exception) {
