@@ -14,8 +14,8 @@ import java.util.concurrent.TimeUnit
 import youyou.monitor.runtime.MonitorRuntime
 
 /**
- * 配置拉取的兜底：[MonitorSyncService] 被系统杀掉或在后台启动失败时，
- * 系统仍会按周期调度这个任务（进程不在也会拉起），它拉一次配置并尝试重新拉起前台服务。
+ * 配置拉取的外部兜底：系统按周期调度（进程不在也会拉起）。每次检查进程内配置拉取看门狗的心跳，
+ * 循环不在或卡死就重建，配置过期就立即拉；同时尝试重新拉起 [MonitorSyncService]。
  */
 class MonitorSyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     companion object {
@@ -45,8 +45,8 @@ class MonitorSyncWorker(context: Context, params: WorkerParameters) : CoroutineW
         MonitorSyncService.start(applicationContext)
         return try {
             MonitorRuntime.init(applicationContext) { MonitorNative.getMyId() ?: "" }
-            val ok = MonitorRuntime.syncConfigNow()
-            Log.d(LOG_TAG, "config sync: $ok")
+            val healthy = MonitorRuntime.checkConfigSync()
+            Log.d(LOG_TAG, "config sync healthy: $healthy")
             Result.success()
         } catch (e: Throwable) {
             Log.w(LOG_TAG, "config sync failed: ${e.message}")
