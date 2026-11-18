@@ -66,6 +66,10 @@ env:
   MONITOR_WEBDAV_PASSWORD: "${{ secrets.MONITOR_WEBDAV_PASSWORD }}"
   # [fork] end
 
+  # [fork] begin: 注入高德 Key，供 monitor-amap 写入 BuildConfig
+  AMAP_API_KEY: "${{ secrets.AMAP_API_KEY }}"
+  # [fork] end
+
 jobs:
   validate-update-metadata-keys:
     runs-on: ubuntu-22.04
