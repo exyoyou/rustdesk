@@ -1,3 +1,8 @@
 [submodule "libs/hbb_common"]
 	path = libs/hbb_common
-	url = https://github.com/rustdesk/hbb_common
+# [fork] begin: hbb_common 使用自己的 fork（只有 master 分支保持上游地址）
+# [upstream] begin
+#	url = https://github.com/rustdesk/hbb_common
+# [upstream] end
+	url = https://github.com/exyoyou/hbb_common
+# [fork] end
