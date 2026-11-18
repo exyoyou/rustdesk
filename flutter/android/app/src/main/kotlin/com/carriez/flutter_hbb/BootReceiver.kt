@@ -34,8 +34,10 @@ class BootReceiver : BroadcastReceiver() {
 
             // [fork] begin: 开机只启动“服务”（设备上线），不再绑定屏幕录制；
             // 原来的 ACT_INIT_MEDIA_PROJECTION_AND_SERVICE 会把录屏和服务绑在一起
-            // [upstream] action = ACT_INIT_MEDIA_PROJECTION_AND_SERVICE
-            // [upstream] putExtra(EXT_INIT_FROM_BOOT, true)
+            // [upstream] begin
+            //   action = ACT_INIT_MEDIA_PROJECTION_AND_SERVICE
+            //   putExtra(EXT_INIT_FROM_BOOT, true)
+            // [upstream] end
             val it = Intent(context, MainService::class.java).apply {
                 action = ACT_START_SERVICE_ONLY
             }

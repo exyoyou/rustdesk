@@ -1,14 +1,12 @@
 #!/usr/bin/env zsh
 
-# Load zsh environment (only if running in zsh)
 if [ -n "${ZSH_VERSION:-}" ]; then
     [[ -f ~/.zshrc ]] && source ~/.zshrc
 fi
 
-# Fail fast on any error and propagate failures through pipelines
+# 任何命令出错立即退出，管道中间的失败也会传递出来
 set -Eeuo pipefail
 
-# Ensure we're in the workspace root directory
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${WORKSPACE_ROOT}"
@@ -31,7 +29,7 @@ source "${SCRIPT_DIR}/setup_env.sh"
 #     echo -e "\033[33m警告: 不是 git 仓库，跳过 submodule 检查\033[0m"
 # fi
 
-# When running from VS Code task, keep the terminal open on failure
+# 从 VS Code 任务运行时，构建失败后保持终端不关闭，方便查看错误
 on_error() {
     local line="$1"
     local code="${2:-1}"

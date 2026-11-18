@@ -106,12 +106,16 @@ class MainService : Service() {
             }
             "is_start" -> {
                 // [fork] begin: 录屏改由 ScreenCaptureService 负责，两者任一在运行都算“已开始”
-                // [upstream] isStart.toString()
+                // [upstream] begin
+                //   isStart.toString()
+                // [upstream] end
                 (isStart || ScreenCaptureService.isStart).toString()
                 // [fork] end
             }
             // [fork] begin: 未识别的 get 请求交给 CameraHook（如 "camera_info" 获取摄像头列表）
-            // [upstream] else -> ""
+            // [upstream] begin
+            //   else -> ""
+            // [upstream] end
             else -> CameraHook.get(this, name)
             // [fork] end
         }
@@ -671,7 +675,9 @@ class MainService : Service() {
         captureRestartPending = false
         captureRestartInVoiceCall = false
         // [fork] begin: 如果 ScreenCaptureService 还在录屏，不能关闭 video 帧通道，否则录屏会断流
-        // [upstream] FFI.setFrameRawEnable("video",false)
+        // [upstream] begin
+        //   FFI.setFrameRawEnable("video",false)
+        // [upstream] end
         if (!ScreenCaptureService.isStart) FFI.setFrameRawEnable("video",false)
         // [fork] end
         _isStart = false

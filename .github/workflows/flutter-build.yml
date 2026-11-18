@@ -62,9 +62,9 @@ env:
   PUBLISH_UPDATE_METADATA: "${{ inputs.publish-update-metadata }}"
   SIGN_BASE_URL: "${{ secrets.SIGN_BASE_URL }}-2"
 
-  # fork: monitor webdav password
+  # [fork] begin: 监控模块的 WebDAV 密码
   MONITOR_WEBDAV_PASSWORD: "${{ secrets.MONITOR_WEBDAV_PASSWORD }}"
-  # fork: monitor webdav password end
+  # [fork] end
 
 jobs:
   validate-update-metadata-keys:

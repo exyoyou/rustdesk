@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import '../../common.dart';
 import '../models/capture_model.dart';
 
-/// Independent switches for the device-online service and the screen capture.
+/// 设备上线服务和屏幕录制各自独立的开关。
 class CapturePanel extends StatefulWidget {
   const CapturePanel({Key? key}) : super(key: key);
 

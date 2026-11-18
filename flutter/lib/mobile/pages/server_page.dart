@@ -13,7 +13,7 @@ import '../../common/widgets/dialog.dart';
 import '../../consts.dart';
 import '../../models/platform_model.dart';
 import '../../models/server_model.dart';
-// [fork] begin
+// [fork] begin: 录屏/摄像头控制面板
 import '../../fork/widgets/capture_panel.dart';
 // [fork] end
 import '../../utils/android_documents.dart';

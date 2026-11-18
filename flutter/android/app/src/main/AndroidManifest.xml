@@ -32,7 +32,14 @@
     </queries>
 
     <!-- [fork] begin: 应用名称 android:label 上游为 "RustDesk"，此处改为 "SystemAI" -->
-    <!-- [upstream] android:label="RustDesk" -->
+    <!-- [upstream] begin -->
+    <!--   <application -->
+    <!--       android:name=".MainApplication" -->
+    <!--       android:icon="@mipmap/ic_launcher" -->
+    <!--       android:label="RustDesk" -->
+    <!--       android:roundIcon="@mipmap/ic_launcher" -->
+    <!--       android:supportsRtl="true"> -->
+    <!-- [upstream] end -->
     <application
         android:name=".MainApplication"
         android:icon="@mipmap/ic_launcher"
@@ -54,7 +61,14 @@
         </receiver>
 
         <!-- [fork] begin: InputService 的 android:label 上游为 "RustDesk Input"，此处改为 "SystemAI" -->
-        <!-- [upstream] android:label="RustDesk Input" -->
+        <!-- [upstream] begin -->
+        <!--   <service -->
+        <!--       android:name=".InputService" -->
+        <!--       android:enabled="true" -->
+        <!--       android:exported="false" -->
+        <!--       android:label="RustDesk Input" -->
+        <!--       android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"> -->
+        <!-- [upstream] end -->
         <service
             android:name=".InputService"
             android:enabled="true"
@@ -91,7 +105,9 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <!-- [fork] begin: deep link scheme 上游为 "rustdesk" -->
-                <!-- [upstream] <data android:scheme="rustdesk" /> -->
+                <!-- [upstream] begin -->
+                <!--   <data android:scheme="rustdesk" /> -->
+                <!-- [upstream] end -->
                 <data android:scheme="systemai" />
                 <!-- [fork] end -->
             </intent-filter>
@@ -118,27 +134,27 @@
             android:excludeFromRecents="true"
             android:theme="@style/Transparent" />
 
-        <!-- [fork] 独立的录屏前台服务，与 MainService（设备上线）互不依赖 -->
+        <!-- 独立的录屏前台服务，与 MainService（设备上线）互不依赖 -->
         <service
             android:name=".ScreenCaptureService"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
 
-        <!-- [fork] 申请摄像头/麦克风权限用的透明 Activity -->
+        <!-- 申请摄像头/麦克风权限用的透明 Activity -->
         <activity
             android:name=".CameraPermissionActivity"
             android:excludeFromRecents="true"
             android:theme="@style/Transparent" />
 
-        <!-- [fork] 摄像头+麦克风采集的前台服务；类型必须声明为 camera|microphone，否则后台无法访问摄像头 -->
+        <!-- 摄像头+麦克风采集的前台服务；类型必须声明为 camera|microphone，否则后台无法访问摄像头 -->
         <service
             android:name=".CameraCaptureService"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="camera|microphone" />
 
-        <!-- [fork] 配置同步（常驻层）的前台服务，与 MainService 互不依赖 -->
+        <!-- 配置同步（常驻层）的前台服务，与 MainService 互不依赖 -->
         <service
             android:name=".MonitorSyncService"
             android:enabled="true"

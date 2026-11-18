@@ -289,7 +289,7 @@ class ScreenCaptureService : Service() {
 
     private fun onImageAvailable(reader: ImageReader) {
         try {
-            // If acquireLatestImage is not called, the listener will not be called again
+            // 必须调用 acquireLatestImage 取走这一帧，否则监听器不会再收到后续帧
             reader.acquireLatestImage()?.use { image ->
                 if (!_isStart) {
                     return
@@ -327,17 +327,16 @@ class ScreenCaptureService : Service() {
         val reader = createImageReader()
         val projection = mediaProjection
         if (Build.VERSION.SDK_INT > Build.VERSION_CODES.TIRAMISU || projection == null) {
-            // Resizing while attached may leave the mirrored content unscaled (only a part of
-            // the screen is shown until the display restarts). Detach first so the system
-            // restarts the mirroring with the new size.
+            // surface 还挂着时直接改尺寸，镜像内容可能不缩放（只显示部分屏幕，直到显示重启）。
+            // 先断开 surface，让系统按新尺寸重新开始镜像。
             display.surface = null
             imageReader = reader
             oldReader.close()
             serviceHandler?.postDelayed({ attachResizedDisplay(display, reader) }, 150)
             return
         } else {
-            // resize() on a mirror display may not rescale the content before Android 14,
-            // which shows only a part of the screen. Recreate it, as MainService does.
+            // Android 14 之前，对镜像显示调用 resize() 可能不会重新缩放内容，只显示部分屏幕。
+            // 因此和 MainService 一样，直接重建虚拟显示。
             display.release()
             virtualDisplay = try {
                 projection.createVirtualDisplay(

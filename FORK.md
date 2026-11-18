@@ -3,7 +3,19 @@
 本仓库基于上游 [rustdesk/rustdesk](https://github.com/rustdesk/rustdesk)。为了降低合并上游的代价，自己写的代码按下面的规则存放：
 
 - **新增代码**：放在各语言的 `fork/` 目录，或 `monitor-*` 子模块里。上游不会动这些文件，合并时不会冲突。
-- **上游文件里的改动**：只留尽量小的钩子，用 `[fork] begin` / `[fork] end` 包起来，应用内代理相关的用 `[monitor-proxy]`。改动了上游原有行的地方，用 `[upstream]` 注释保留原文。
+- **上游文件里的改动**：只留尽量小的钩子，用 `[fork] begin` / `[fork] end` 包起来，应用内代理相关的用 `[monitor-proxy]`。改动了上游原有行的地方，用 `[upstream]` 注释保留原文。格式如下（注释符号随文件类型）：
+
+```
+// [fork] begin: 中文说明
+// [upstream] begin                    ← 原文不论几行都用块
+//   原文第 1 行
+//   原文第 2 行
+// [upstream] end
+fork 的代码
+// [fork] end
+```
+
+  纯新增的代码不写 `[upstream]`；块内的其他说明直接写注释，不再加 `[fork]` 前缀。
 
 合并上游后可以这样检查：
 
@@ -38,7 +50,8 @@ git grep -n "\[upstream\]"                # 改动过的上游原行
 | | 140 | kotlin-stdlib 1.9.10 → 2.1.21（改了上游原行） |
 | | 146 | `implementation project(':monitor-runtime')` |
 | `libs/hbb_common` | — | 子模块指向自己的仓库 |
-| `.github/workflows/flutter-build.yml` | 1524 | JNI 检查放行 fork 目录（改了上游原行） |
+| `.github/workflows/flutter-build.yml` | 65 | `MONITOR_WEBDAV_PASSWORD` 环境变量 |
+| | 1524 | JNI 检查放行 fork 目录（改了上游原行） |
 | | 1538 | 校验 fork 的 Kotlin `external fun` 与 Rust 导出一一对应 |
 
 ### AndroidManifest.xml

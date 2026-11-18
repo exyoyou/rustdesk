@@ -6,7 +6,7 @@ import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/main.dart';
 import 'package:flutter_hbb/mobile/pages/settings_page.dart';
 import 'package:flutter_hbb/models/chat_model.dart';
-// [fork] begin
+// [fork] begin: 录屏/摄像头状态模型
 import 'package:flutter_hbb/fork/models/capture_model.dart';
 // [fork] end
 import 'package:flutter_hbb/models/platform_model.dart';
@@ -455,8 +455,7 @@ class ServerModel with ChangeNotifier {
     }
   }
 
-  /// [fork] begin: 只启动服务（设备上线），不启动屏幕录制；录屏由 CapturePanel 单独控制。
-  /// Start the service only (device online), without screen capture.
+  // [fork] begin: 只启动服务（设备上线），不启动屏幕录制；录屏由 CapturePanel 单独控制。
   Future<void> startServiceOnly() async {
     _isStart = true;
     notifyListeners();

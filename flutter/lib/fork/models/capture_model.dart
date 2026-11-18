@@ -3,8 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../../common.dart';
 
-/// Android only. Controls the device-online service and the screen capture
-/// independently through the `mChannelCapture` channel.
+/// 仅 Android 使用：通过 `mChannelCapture` 通道分别控制设备上线服务和屏幕录制。
 ///
 /// 关键点：服务、录屏、摄像头权限 三个状态各自独立，原生侧状态变化通过 on_state 回调推过来；
 /// 打开页面时用 [refresh] 主动同步一次，防止界面和原生真实状态不一致。

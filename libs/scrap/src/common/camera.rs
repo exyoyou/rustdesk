@@ -172,7 +172,9 @@ impl Cameras {
 
     pub fn exists(_index: usize) -> bool {
         // [fork] begin: Android：查询 Kotlin 层是否存在该下标的摄像头
-        // [upstream] false
+        // [upstream] begin
+        //   false
+        // [upstream] end
         #[cfg(target_os = "android")]
         return crate::android::fork::camera::exists(_index);
         #[cfg(not(target_os = "android"))]
@@ -186,7 +188,9 @@ impl Cameras {
 
     pub fn get_sync_cameras() -> Vec<DisplayInfo> {
         // [fork] begin: Android：返回（并刷新）摄像头列表，编码器尺寸以此为准
-        // [upstream] vec![]
+        // [upstream] begin
+        //   vec![]
+        // [upstream] end
         #[cfg(target_os = "android")]
         return crate::android::fork::camera::get_sync_cameras();
         #[cfg(not(target_os = "android"))]
