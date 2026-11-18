@@ -1521,10 +1521,33 @@ jobs:
         shell: bash
         run: |
           bad=0
-          grep -rnE --include='*.rs' 'fn Java_' src libs | grep -v 'fn Java_ffi_FFI_' && bad=1
+          # [fork] begin: 放行 fork 目录下的 JNI native（本 fork 没有改 com.carriez.flutter_hbb 包名）
+          # [upstream] begin
+          #   grep -rnE --include='*.rs' 'fn Java_' src libs | grep -v 'fn Java_ffi_FFI_' && bad=1
+          #   grep -rl --include='*.kt' 'external fun' flutter/android \
+          #     | grep -vx 'flutter/android/app/src/main/kotlin/ffi.kt' && bad=1
+          # [upstream] end
+          grep -rnE --include='*.rs' 'fn Java_' src libs | grep -v 'fn Java_ffi_FFI_' \
+            | grep -v '/fork/' && bad=1
           grep -rl --include='*.kt' 'external fun' flutter/android \
-            | grep -vx 'flutter/android/app/src/main/kotlin/ffi.kt' && bad=1
+            | grep -vx 'flutter/android/app/src/main/kotlin/ffi.kt' \
+            | grep -v '^flutter/android/app/src/fork/' \
+            | grep -v '^flutter/android/monitor-runtime/' && bad=1
+          # [fork] end
           grep -rn --include='*.rs' 'com/carriez' src libs && bad=1
+          # [fork] begin: 校验 fork 的 Kotlin external fun 与 Rust 导出一一对应（双向）
+          expected=$(for f in $(grep -rl --include='*.kt' 'external fun' flutter/android/app/src/fork); do
+            pkg=$(sed -nE 's/^package ([A-Za-z0-9_.]+).*/\1/p' "$f" | sed 's/_/_1/g; s/\./_/g')
+            cls=$(sed -nE 's/^(object|class) ([A-Za-z0-9_]+).*/\2/p' "$f" | head -n1)
+            sed -nE 's/.*external fun ([A-Za-z0-9_]+).*/\1/p' "$f" | sed "s/^/Java_${pkg}_${cls}_/"
+          done | sort -u) || true
+          exported=$(grep -rhoE --include='*.rs' 'fn Java_[A-Za-z0-9_]+' src libs | grep -v 'Java_ffi_FFI_' \
+            | sed 's/^fn //' | sort -u) || true
+          missing=$(comm -23 <(echo "$expected") <(echo "$exported"))
+          orphan=$(comm -13 <(echo "$expected") <(echo "$exported"))
+          [ -n "$missing" ] && echo "::error::fork Kotlin natives without Rust export: $missing" && bad=1
+          [ -n "$orphan" ] && echo "::error::fork Rust exports without Kotlin declaration: $orphan" && bad=1
+          # [fork] end
           if [ "$bad" = 1 ]; then
             echo "::error::Declare Android natives in ffi.FFI, export them as Java_ffi_FFI_*, and do not look up app classes by name (see AGENTS.md)"
             exit 1

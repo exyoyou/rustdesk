@@ -38,6 +38,8 @@ git grep -n "\[upstream\]"                # 改动过的上游原行
 | | 140 | kotlin-stdlib 1.9.10 → 2.1.21（改了上游原行） |
 | | 146 | `implementation project(':monitor-runtime')` |
 | `libs/hbb_common` | — | 子模块指向自己的仓库 |
+| `.github/workflows/flutter-build.yml` | 1524 | JNI 检查放行 fork 目录（改了上游原行） |
+| | 1538 | 校验 fork 的 Kotlin `external fun` 与 Rust 导出一一对应 |
 
 ### AndroidManifest.xml
 
