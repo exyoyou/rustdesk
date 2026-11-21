@@ -6,7 +6,8 @@
 # 无冲突直接合并推送；有冲突则停止该链路并让任务失败（GitHub 会发失败邮件），
 # 冲突文件和本地处理命令写在 Job Summary 里。
 # 需要 secret SYNC_TOKEN：对 exyoyou/rustdesk 和 exyoyou/hbb_common 有
-# Contents: Read and write + Workflows: Read and write 权限的 PAT。
+# Contents: Read and write + Workflows: Read and write 权限的 PAT，
+# 对 exyoyou/rustdesk 还需要 Actions: Read and write（发版前启用 Flutter Tag Build）。
 # schedule 只在默认分支上触发，所以此文件需要在默认分支（self-use）上。
 name: Fork sync upstream
 
@@ -169,6 +170,8 @@ jobs:
       - name: Release on new upstream tag
         id: release
         if: steps.hbb.outputs.ok == 'true' && steps.rustdesk.outputs.ok == 'true'
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
         run: |
           set -uo pipefail
           sum() { echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
@@ -214,6 +217,13 @@ jobs:
             echo "$conflicts" >> "$GITHUB_STEP_SUMMARY"
             sum '```'
             sum "  本地处理：\`git fetch upstream tag ${tag} && git checkout -b release-${tag} ${tag} && git merge origin/self-use\`，解决后 \`git tag ${rel} && git push origin ${rel}\`"
+            exit 0
+          fi
+
+          # Flutter Tag Build 曾被莫名禁用；禁用时推 tag 不会编译，所以先启用，失败则不打 tag，下次运行重试
+          if ! GH_TOKEN="$SYNC_TOKEN" gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/flutter-tag.yml/enable" >/dev/null; then
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            sum "- :x: 无法启用 Flutter Tag Build（SYNC_TOKEN 需要 Actions: Read and write 权限），未打 tag \`${rel}\`，下次运行会重试"
             exit 0
           fi
 
