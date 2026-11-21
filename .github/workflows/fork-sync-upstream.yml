@@ -1,0 +1,233 @@
+# [fork] 每天同步上游：
+#   hbb_common: upstream/main -> main(快进) -> develop
+#   rustdesk:   upstream/master -> master(快进) -> original_dev_run_ubuntu26 -> self-run -> self-use
+#   发版:       上游出现新的 X.Y.Z tag 且 fork 还没有 vX.Y.Z / vX.Y.Z-*，在链路全部成功后
+#               生成「上游 tag 节点 + self-use 的改动」的提交，打 vX.Y.Z 推送，触发 flutter-tag.yml 编译发布
+# 无冲突直接合并推送；有冲突则停止该链路并让任务失败（GitHub 会发失败邮件），
+# 冲突文件和本地处理命令写在 Job Summary 里。
+# 需要 secret SYNC_TOKEN：对 exyoyou/rustdesk 和 exyoyou/hbb_common 有
+# Contents: Read and write + Workflows: Read and write 权限的 PAT。
+# schedule 只在默认分支上触发，所以此文件需要在默认分支（self-use）上。
+name: Fork sync upstream
+
+on:
+  schedule:
+    - cron: "0 18 * * *" # 北京时间 02:00
+  workflow_dispatch:
+
+concurrency:
+  group: fork-sync-upstream
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  FORK_OWNER: exyoyou
+  HBB_DIR: ${{ github.workspace }}/../hbb_common_sync
+  # 按顺序依次合并：上游 -> 下游
+  RUSTDESK_CHAIN: "master original_dev_run_ubuntu26 self-run self-use"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check token
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          if [ -z "$SYNC_TOKEN" ]; then
+            echo "::error::缺少 secret SYNC_TOKEN"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: self-use
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Setup git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          echo "# 上游同步结果" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Sync hbb_common
+        id: hbb
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          set -uo pipefail
+          sum() { echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          sum "## hbb_common"
+
+          git clone -q "https://x-access-token:${SYNC_TOKEN}@github.com/${FORK_OWNER}/hbb_common.git" "$HBB_DIR"
+          cd "$HBB_DIR"
+          git remote add upstream https://github.com/rustdesk/hbb_common.git
+          git fetch -q upstream main
+          git fetch -q origin
+
+          ok=true
+
+          git checkout -q -B main origin/main
+          if git merge -q --ff-only upstream/main; then
+            if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
+              git push -q origin HEAD:refs/heads/main && sum "- main: 已快进到 upstream/main \`$(git rev-parse --short HEAD)\`"
+            else
+              sum "- main: 无更新"
+            fi
+          else
+            ok=false
+            sum "- :x: main 与 upstream/main 已分叉，无法快进，需要手动处理"
+          fi
+
+          if $ok; then
+            git checkout -q -B develop origin/develop
+            if git merge-base --is-ancestor main develop; then
+              sum "- develop: 无更新"
+            elif git merge --no-edit main >/dev/null 2>&1; then
+              git push -q origin HEAD:refs/heads/develop && sum "- develop: 已合并 main \`$(git rev-parse --short HEAD)\`"
+            else
+              ok=false
+              sum "- :x: develop 合并 main 冲突："
+              sum '```'
+              git diff --name-only --diff-filter=U >> "$GITHUB_STEP_SUMMARY"
+              sum '```'
+              sum "  本地处理：\`cd libs/hbb_common && git fetch origin && git checkout develop && git merge origin/develop && git merge origin/main\`"
+              git merge --abort
+            fi
+          fi
+
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+          echo "develop=$(git rev-parse develop 2>/dev/null)" >> "$GITHUB_OUTPUT"
+
+      - name: Sync rustdesk
+        id: rustdesk
+        env:
+          HBB_OK: ${{ steps.hbb.outputs.ok }}
+          HBB_DEVELOP: ${{ steps.hbb.outputs.develop }}
+        run: |
+          set -uo pipefail
+          sum() { echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          sum "## rustdesk"
+
+          git remote add upstream https://github.com/rustdesk/rustdesk.git
+          git fetch -q upstream master
+
+          # 上游升级了 hbb_common 指针时，若上游钉的提交已包含在 fork 的 develop 中，
+          # 把指针解析为 develop；否则视为冲突。
+          resolve_hbb_gitlink() {
+            local pin
+            [ "$HBB_OK" = "true" ] || return 1
+            pin=$(git rev-parse -q --verify MERGE_HEAD:libs/hbb_common) || return 1
+            git -C "$HBB_DIR" merge-base --is-ancestor "$pin" "$HBB_DEVELOP" || return 1
+            git update-index --cacheinfo "160000,${HBB_DEVELOP},libs/hbb_common"
+          }
+
+          ok=true
+          prev=""
+          for b in $RUSTDESK_CHAIN; do
+            git checkout -q -B "$b" "origin/$b"
+
+            if [ -z "$prev" ]; then
+              if git merge -q --ff-only upstream/master; then
+                :
+              else
+                ok=false
+                sum "- :x: $b 与 upstream/master 已分叉，无法快进，需要手动处理"
+                break
+              fi
+            elif git merge-base --is-ancestor "refs/heads/$prev" HEAD; then
+              :
+            elif ! git merge --no-edit "refs/heads/$prev" >/dev/null 2>&1; then
+              conflicts=$(git diff --name-only --diff-filter=U)
+              if [ "$conflicts" = "libs/hbb_common" ] && resolve_hbb_gitlink && git commit -q --no-edit; then
+                sum "- $b: hbb_common 指针冲突已自动解析为 develop \`${HBB_DEVELOP:0:9}\`"
+              else
+                ok=false
+                sum "- :x: 合并 $prev -> $b 冲突："
+                sum '```'
+                echo "$conflicts" >> "$GITHUB_STEP_SUMMARY"
+                sum '```'
+                sum "  本地处理：\`git fetch origin && git checkout $b && git merge origin/$b && git merge origin/$prev\`，解决后推送，下游分支下次运行会自动继续。"
+                git merge --abort
+                break
+              fi
+            fi
+
+            if [ "$(git rev-parse HEAD)" != "$(git rev-parse "origin/$b")" ]; then
+              git push -q origin "HEAD:refs/heads/$b" && sum "- $b: 已更新 \`$(git rev-parse --short HEAD)\`" || { ok=false; sum "- :x: $b 推送失败"; break; }
+            else
+              sum "- $b: 无更新"
+            fi
+            prev="$b"
+          done
+
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+
+      - name: Release on new upstream tag
+        id: release
+        if: steps.hbb.outputs.ok == 'true' && steps.rustdesk.outputs.ok == 'true'
+        run: |
+          set -uo pipefail
+          sum() { echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          sum "## 发版"
+
+          # 上游 tag 放到单独的命名空间，避免和 fork 自己的 tag 冲突
+          git fetch -q upstream '+refs/tags/*:refs/upstream-tags/*'
+          tag=$(git for-each-ref --format='%(refname:lstrip=2)' refs/upstream-tags \
+            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)
+          rel="v${tag}"
+          if [ -z "$tag" ] || [ -n "$(git tag -l "$rel" "$rel-*")" ]; then
+            sum "- 上游最新 tag \`${tag}\` 已发过版，跳过"
+            exit 0
+          fi
+
+          # 以 self-use 已包含的最新上游提交为基准，把 self-use 的改动应用到 tag 节点上，
+          # 这样即使 self-use 已经合了 tag 之后的上游提交，发版内容也正好是「tag + fork 改动」
+          tagc=$(git rev-parse "refs/upstream-tags/${tag}^{commit}")
+          fork=$(git rev-parse refs/heads/self-use)
+          base=$(git merge-base "$fork" upstream/master)
+          out=$(git merge-tree --write-tree --name-only --no-messages --merge-base="$base" "$tagc" "$fork")
+          rc=$?
+          tree=$(echo "$out" | head -n1)
+          conflicts=$(echo "$out" | tail -n +2 | sed '/^$/d')
+
+          if [ $rc -eq 1 ] && [ "$conflicts" = "libs/hbb_common" ]; then
+            tag_pin=$(git rev-parse "${tagc}:libs/hbb_common")
+            fork_pin=$(git rev-parse "${fork}:libs/hbb_common")
+            if git -C "$HBB_DIR" merge-base --is-ancestor "$tag_pin" "$fork_pin"; then
+              export GIT_INDEX_FILE="$RUNNER_TEMP/release.idx"
+              git read-tree "$tree"
+              git update-index --cacheinfo "160000,${fork_pin},libs/hbb_common"
+              tree=$(git write-tree)
+              unset GIT_INDEX_FILE
+              rc=0
+            fi
+          fi
+
+          if [ $rc -ne 0 ]; then
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            sum "- :x: 上游 tag \`${tag}\` 与 self-use 的改动合并冲突，未发版："
+            sum '```'
+            echo "$conflicts" >> "$GITHUB_STEP_SUMMARY"
+            sum '```'
+            sum "  本地处理：\`git fetch upstream tag ${tag} && git checkout -b release-${tag} ${tag} && git merge origin/self-use\`，解决后 \`git tag ${rel} && git push origin ${rel}\`"
+            exit 0
+          fi
+
+          commit=$(git commit-tree "$tree" -p "$tagc" -p "$fork" -m "Release ${rel}: upstream ${tag} + self-use")
+          git tag -a "$rel" "$commit" -m "Release ${rel} (upstream ${tag} + self-use $(git rev-parse --short "$fork"))"
+          if git push -q origin "refs/tags/${rel}"; then
+            sum "- 已打 tag \`${rel}\` (\`$(git rev-parse --short "$commit")\`)，flutter-tag.yml 将编译并发布到 Releases"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            sum "- :x: 推送 tag \`${rel}\` 失败"
+          fi
+
+      - name: Fail on conflicts
+        if: steps.hbb.outputs.ok != 'true' || steps.rustdesk.outputs.ok != 'true' || steps.release.outputs.ok == 'false'
+        run: |
+          echo "::error::存在需要手动处理的冲突，详见 Job Summary"
+          exit 1
