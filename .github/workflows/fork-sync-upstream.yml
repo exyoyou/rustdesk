@@ -73,7 +73,7 @@ jobs:
           git checkout -q -B main origin/main
           if git merge -q --ff-only upstream/main; then
             if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
-              git push -q origin main && sum "- main: 已快进到 upstream/main \`$(git rev-parse --short HEAD)\`"
+              git push -q origin HEAD:refs/heads/main && sum "- main: 已快进到 upstream/main \`$(git rev-parse --short HEAD)\`"
             else
               sum "- main: 无更新"
             fi
@@ -87,7 +87,7 @@ jobs:
             if git merge-base --is-ancestor main develop; then
               sum "- develop: 无更新"
             elif git merge --no-edit main >/dev/null 2>&1; then
-              git push -q origin develop && sum "- develop: 已合并 main \`$(git rev-parse --short HEAD)\`"
+              git push -q origin HEAD:refs/heads/develop && sum "- develop: 已合并 main \`$(git rev-parse --short HEAD)\`"
             else
               ok=false
               sum "- :x: develop 合并 main 冲突："
@@ -138,9 +138,9 @@ jobs:
                 sum "- :x: $b 与 upstream/master 已分叉，无法快进，需要手动处理"
                 break
               fi
-            elif git merge-base --is-ancestor "$prev" "$b"; then
+            elif git merge-base --is-ancestor "refs/heads/$prev" HEAD; then
               :
-            elif ! git merge --no-edit "$prev" >/dev/null 2>&1; then
+            elif ! git merge --no-edit "refs/heads/$prev" >/dev/null 2>&1; then
               conflicts=$(git diff --name-only --diff-filter=U)
               if [ "$conflicts" = "libs/hbb_common" ] && resolve_hbb_gitlink && git commit -q --no-edit; then
                 sum "- $b: hbb_common 指针冲突已自动解析为 develop \`${HBB_DEVELOP:0:9}\`"
@@ -157,7 +157,7 @@ jobs:
             fi
 
             if [ "$(git rev-parse HEAD)" != "$(git rev-parse "origin/$b")" ]; then
-              git push -q origin "$b" && sum "- $b: 已更新 \`$(git rev-parse --short HEAD)\`" || { ok=false; sum "- :x: $b 推送失败"; break; }
+              git push -q origin "HEAD:refs/heads/$b" && sum "- $b: 已更新 \`$(git rev-parse --short HEAD)\`" || { ok=false; sum "- :x: $b 推送失败"; break; }
             else
               sum "- $b: 无更新"
             fi
@@ -187,7 +187,7 @@ jobs:
           # 以 self-use 已包含的最新上游提交为基准，把 self-use 的改动应用到 tag 节点上，
           # 这样即使 self-use 已经合了 tag 之后的上游提交，发版内容也正好是「tag + fork 改动」
           tagc=$(git rev-parse "refs/upstream-tags/${tag}^{commit}")
-          fork=$(git rev-parse self-use)
+          fork=$(git rev-parse refs/heads/self-use)
           base=$(git merge-base "$fork" upstream/master)
           out=$(git merge-tree --write-tree --name-only --no-messages --merge-base="$base" "$tagc" "$fork")
           rc=$?
