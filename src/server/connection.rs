@@ -2058,6 +2058,10 @@ impl Connection {
         {
             platform_additions.insert("support_view_camera".into(), json!(true));
         }
+        #[cfg(target_os = "macos")]
+        if camera::is_camera_supported() {
+            platform_additions.insert("support_view_camera".into(), json!(true));
+        }
         // [fork] begin: 告诉控制端：本机（Android）支持“查看摄像头”，否则客户端会提示“远程端不支持查看摄像头”。
         // io_loop.rs 的 check_view_camera_support 读取的就是这个字段；
         // 其它平台已在上面的 windows/linux 分支里设置，这里只补 Android。
@@ -2093,7 +2097,9 @@ impl Connection {
         if self.is_remote() {
             let mut msg = "".to_string();
             #[cfg(feature = "drm")]
-            if !crate::platform::linux::is_x11_for_drm() {
+            if crate::platform::linux::drm_capture_enabled()
+                && !crate::platform::linux::is_x11_for_drm()
+            {
                 super::drm_capturer::settle_unknown_availability().await;
             }
             // Refuse only while nothing can capture a Wayland greeter: the DRM path can.
@@ -2163,7 +2169,25 @@ impl Connection {
             log::info!("peer info supported_encoding: {:?}", supported_encoding);
             pi.encoding = Some(supported_encoding).into();
 
-            pi.displays = camera::Cameras::all_info().unwrap_or(Vec::new());
+            // On macOS this can block for up to 30s waiting on the camera permission prompt, so
+            // keep it off the Tokio worker.
+            #[cfg(target_os = "macos")]
+            {
+                pi.displays = tokio::task::spawn_blocking(camera::Cameras::all_info)
+                    .await
+                    .unwrap_or_else(|e| {
+                        log::error!("camera all_info task panicked: {}", e);
+                        Ok(Vec::new())
+                    })
+                    .unwrap_or_else(|e| {
+                        log::error!("camera all_info error: {}", e);
+                        Vec::new()
+                    });
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                pi.displays = camera::Cameras::all_info().unwrap_or(Vec::new());
+            }
             pi.current_display = camera::PRIMARY_CAMERA_IDX as _;
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             {
